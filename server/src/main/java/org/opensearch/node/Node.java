@@ -298,6 +298,9 @@ import org.opensearch.transport.client.node.NodeClient;
 import org.opensearch.usage.UsageService;
 import org.opensearch.plugins.spi.vectorized.DataFormat;
 import org.opensearch.plugins.spi.vectorized.DataSourceCodec;
+import org.opensearch.vectorized.execution.metrics.MetricProvider;
+import org.opensearch.vectorized.execution.metrics.PluginStats;
+import org.opensearch.common.cache.ServiceCache;
 import org.opensearch.watcher.ResourceWatcherService;
 import org.opensearch.wlm.WorkloadGroupService;
 import org.opensearch.wlm.WorkloadGroupsStateAccessor;
@@ -1511,6 +1514,21 @@ public class Node implements Closeable {
                 taskCancellationMonitoringSettings
             );
 
+            // Obtain MetricProvider from SearchEnginePlugin implementations
+            MetricProvider metricProvider = null;
+            for (SearchEnginePlugin plugin : pluginsService.filterPlugins(SearchEnginePlugin.class)) {
+                MetricProvider provider = plugin.getMetricProvider();
+                if (provider != null) {
+                    metricProvider = provider;
+                }
+            }
+
+            // Construct ServiceCache instance for native metrics if a provider is available
+            ServiceCache<PluginStats> dataFusionService = null;
+            if (metricProvider != null) {
+                dataFusionService = new ServiceCache<>(metricProvider::stats, TimeValue.timeValueSeconds(1));
+            }
+
             this.nodeService = new NodeService(
                 settings,
                 threadPool,
@@ -1537,7 +1555,8 @@ public class Node implements Closeable {
                 segmentReplicationStatsTracker,
                 repositoryService,
                 admissionControlService,
-                cacheService
+                cacheService,
+                dataFusionService
             );
 
             if (FeatureFlags.isEnabled(ARROW_STREAMS_SETTING)) {

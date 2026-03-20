@@ -29,6 +29,7 @@ import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.datafusion.action.DataFusionAction;
 import org.opensearch.datafusion.action.NodesDataFusionInfoAction;
 import org.opensearch.datafusion.action.TransportNodesDataFusionInfoAction;
+
 import org.opensearch.datafusion.search.DatafusionContext;
 import org.opensearch.datafusion.search.DatafusionQuery;
 import org.opensearch.datafusion.search.DatafusionReaderManager;
@@ -51,6 +52,9 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
+import org.opensearch.datafusion.jni.NativeBridge;
+import org.opensearch.vectorized.execution.metrics.MetricProvider;
+import org.opensearch.vectorized.execution.metrics.PluginStats;
 import org.opensearch.vectorized.execution.search.spi.RecordBatchStream;
 import org.opensearch.watcher.ResourceWatcherService;
 
@@ -72,6 +76,7 @@ import static org.opensearch.datafusion.core.DataFusionRuntimeEnv.DATAFUSION_SPI
 public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEnginePlugin {
 
     private DataFusionService dataFusionService;
+    private DataFusionMetricProvider metricProvider;
     private final boolean isDataFusionEnabled;
 
     /**
@@ -119,6 +124,8 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
             return Collections.emptyList();
         }
         dataFusionService = new DataFusionService(dataSourceCodecs, clusterService, spill_dir);
+
+        metricProvider = new DataFusionMetricProvider();
 
         for(DataFormat format : this.getSupportedFormats()) {
             dataSourceCodecs.get(format);
@@ -196,6 +203,32 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
         }
         return List.of(new ActionHandler<>(NodesDataFusionInfoAction.INSTANCE, TransportNodesDataFusionInfoAction.class));
     }
+
+    /**
+     * Returns the MetricProvider for native metrics collection.
+     * @return The MetricProvider instance.
+     */
+    @Override
+    public MetricProvider getMetricProvider() {
+        return metricProvider;
+    }
+
+    /**
+     * Registers DataFusionPluginStats with the NamedWriteableRegistry
+     * so that NodeStats can deserialize PluginStats polymorphically
+     * without importing the concrete class.
+     */
+    @Override
+    public List<NamedWriteableRegistry.Entry> getNamedWriteables() {
+        return List.of(
+            new NamedWriteableRegistry.Entry(
+                PluginStats.class,
+                DataFusionPluginStats.NAME,
+                DataFusionPluginStats::new
+            )
+        );
+    }
+
 //
 //    @Override
 //    public List<Setting<?>> getSettings() {
@@ -206,4 +239,5 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
 //            .collect(Collectors.toList()).add(MEMORY_POOL_CONFIGURATION_DATAFUSION);
 //
 //    }
+
 }

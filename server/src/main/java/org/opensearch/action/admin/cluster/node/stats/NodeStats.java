@@ -69,6 +69,7 @@ import org.opensearch.search.pipeline.SearchPipelineStats;
 import org.opensearch.tasks.TaskCancellationStats;
 import org.opensearch.threadpool.ThreadPoolStats;
 import org.opensearch.transport.TransportStats;
+import org.opensearch.vectorized.execution.metrics.PluginStats;
 
 import java.io.IOException;
 import java.util.Map;
@@ -166,6 +167,9 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
     @Nullable
     private RemoteStoreNodeStats remoteStoreNodeStats;
 
+    @Nullable
+    private PluginStats dataFusionPluginStats;
+
     public NodeStats(StreamInput in) throws IOException {
         super(in);
         timestamp = in.readVLong();
@@ -252,6 +256,11 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         } else {
             remoteStoreNodeStats = null;
         }
+        if (in.getVersion().onOrAfter(Version.V_3_0_0)) {
+            dataFusionPluginStats = in.readOptionalNamedWriteable(PluginStats.class);
+        } else {
+            dataFusionPluginStats = null;
+        }
     }
 
     public NodeStats(
@@ -284,7 +293,8 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         @Nullable RepositoriesStats repositoriesStats,
         @Nullable AdmissionControlStats admissionControlStats,
         @Nullable NodeCacheStats nodeCacheStats,
-        @Nullable RemoteStoreNodeStats remoteStoreNodeStats
+        @Nullable RemoteStoreNodeStats remoteStoreNodeStats,
+        @Nullable PluginStats dataFusionPluginStats
     ) {
         super(node);
         this.timestamp = timestamp;
@@ -316,6 +326,7 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         this.admissionControlStats = admissionControlStats;
         this.nodeCacheStats = nodeCacheStats;
         this.remoteStoreNodeStats = remoteStoreNodeStats;
+        this.dataFusionPluginStats = dataFusionPluginStats;
     }
 
     public long getTimestamp() {
@@ -483,6 +494,11 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         return remoteStoreNodeStats;
     }
 
+    @Nullable
+    public PluginStats getDataFusionPluginStats() {
+        return dataFusionPluginStats;
+    }
+
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
@@ -543,6 +559,9 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         }
         if (out.getVersion().onOrAfter(Version.V_2_18_0)) {
             out.writeOptionalWriteable(remoteStoreNodeStats);
+        }
+        if (out.getVersion().onOrAfter(Version.V_3_0_0)) {
+            out.writeOptionalNamedWriteable(dataFusionPluginStats);
         }
     }
 
@@ -652,6 +671,11 @@ public class NodeStats extends BaseNodeResponse implements ToXContentFragment {
         }
         if (getRemoteStoreNodeStats() != null) {
             getRemoteStoreNodeStats().toXContent(builder, params);
+        }
+        if (getDataFusionPluginStats() != null) {
+            builder.startObject("native_metrics");
+            getDataFusionPluginStats().toXContent(builder, params);
+            builder.endObject();
         }
         return builder;
     }

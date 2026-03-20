@@ -12,3 +12,4 @@
 //! parquet-data-format and engine-datafusion modules.
 
 pub mod logger;
+pub mod metrics;
