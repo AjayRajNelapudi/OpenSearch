@@ -1,3 +1,4 @@
+use prost::Message;
 use std::cell::RefCell;
 
 #[global_allocator]
@@ -45,6 +46,7 @@ mod cross_rt_stream;
 mod executor;
 mod io;
 mod runtime_manager;
+mod metrics_collector;
 mod cache_jni;
 mod partial_agg_optimizer;
 mod query_executor;
@@ -55,6 +57,12 @@ pub mod logger;
 
 // Import logger macros from shared crate
 use vectorized_exec_spi::{log_info, log_error, log_debug};
+
+// Include prost-generated protobuf types from datafusion_stats.proto
+// Package `vectorized.metrics` → prost generates `vectorized.metrics.rs`
+pub mod datafusion_proto {
+    include!(concat!(env!("OUT_DIR"), "/vectorized.metrics.rs"));
+}
 
 use crate::custom_cache_manager::CustomCacheManager;
 use crate::util::{create_file_meta_from_filenames, parse_string_arr, set_action_listener_error, set_action_listener_error_global, set_action_listener_ok, set_action_listener_ok_global, set_action_listener_ok_global_with_map};
@@ -98,6 +106,18 @@ static STREAM_NEXT_MONITOR: Lazy<TaskMonitor> = Lazy::new(|| {
     TaskMonitor::with_slow_poll_threshold(Duration::from_micros(50)).clone()
 });
 
+static FETCH_PHASE_MONITOR: Lazy<TaskMonitor> = Lazy::new(|| {
+    TaskMonitor::with_slow_poll_threshold(Duration::from_micros(100)).clone()
+});
+
+static SEGMENT_STATS_MONITOR: Lazy<TaskMonitor> = Lazy::new(|| {
+    TaskMonitor::with_slow_poll_threshold(Duration::from_micros(100)).clone()
+});
+
+static INDEXED_QUERY_EXECUTION_MONITOR: Lazy<TaskMonitor> = Lazy::new(|| {
+    TaskMonitor::with_slow_poll_threshold(Duration::from_micros(100)).clone()
+});
+
 // Global runtime manager
 static TOKIO_RUNTIME_MANAGER: OnceLock<Arc<RuntimeManager>> = OnceLock::new();
 
@@ -128,6 +148,60 @@ where
     })
 }
 
+/// Helper: TaskMonitor → proto TaskMonitorMetrics (from cumulative metrics)
+fn task_monitor_to_proto(monitor: &TaskMonitor) -> datafusion_proto::TaskMonitorMetrics {
+    let m = monitor.cumulative();
+    datafusion_proto::TaskMonitorMetrics {
+        total_poll_duration_ms: m.total_poll_duration.as_millis() as u64,
+        total_scheduled_duration_ms: m.total_scheduled_duration.as_millis() as u64,
+        total_idle_duration_ms: m.total_idle_duration.as_millis() as u64,
+        total_slow_poll_count: m.total_slow_poll_count,
+        total_long_delay_count: m.total_long_delay_count,
+        slow_poll_ratio: m.slow_poll_ratio(),
+    }
+}
+
+// ── Single protobuf-encoded stats JNI function ──
+
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_stats<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jbyteArray {
+    let mut stats = datafusion_proto::DataFusionStats::default();
+
+    // IO runtime + CPU runtime
+    if let Some(rm) = TOKIO_RUNTIME_MANAGER.get() {
+        stats.io_runtime = Some(rm.io_metrics.snapshot());
+        if let Some(cpu) = rm.cpu_metrics.as_ref() {
+            stats.cpu_runtime = Some(cpu.snapshot());
+        }
+    }
+
+    // Task monitors
+    stats.task_monitors = Some(datafusion_proto::TaskMonitors {
+        query_execution: Some(task_monitor_to_proto(&QUERY_EXECUTION_MONITOR)),
+        stream_next: Some(task_monitor_to_proto(&STREAM_NEXT_MONITOR)),
+        fetch_phase: Some(task_monitor_to_proto(&FETCH_PHASE_MONITOR)),
+        segment_stats: Some(task_monitor_to_proto(&SEGMENT_STATS_MONITOR)),
+        indexed_query_execution: Some(task_monitor_to_proto(&INDEXED_QUERY_EXECUTION_MONITOR)),
+    });
+
+    let bytes = stats.encode_to_vec();
+    match env.byte_array_from_slice(&bytes) {
+        Ok(arr) => arr.into_raw(),
+        Err(e) => {
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                format!("Failed to create stats byte array: {:?}", e),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+
+
 /// Initialize the logger for Rust->Java logging bridge.
 /// This should be called once when the native library is loaded.
 #[no_mangle]
@@ -155,7 +229,9 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_initTokio
 
     TOKIO_RUNTIME_MANAGER.get_or_init(|| {
         log_info!("Runtime manager initialized with {} CPU threads", cpu_threads);
-        Arc::new(RuntimeManager::new(cpu_threads as usize))
+        let manager = Arc::new(RuntimeManager::new(cpu_threads as usize));
+
+        manager
     });
 }
 
@@ -171,36 +247,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_shutdownT
     }
 }
 
-
-#[no_mangle]
-pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_startTokioRuntimeMonitoring(
-    _env: JNIEnv,
-    _class: JClass,
-) {
-    let manager = match TOKIO_RUNTIME_MANAGER.get() {
-        Some(m) => m,
-        None => {
-            log_info!("Tokio runtime manager not initialized");
-            return;
-        }
-    };
-
-    // Uncomment this to monitor tokio metrics
-
-    // let io_runtime = manager.io_runtime.clone();
-    // io_runtime.spawn(async move {
-    //     let handle = tokio::runtime::Handle::current();
-    //     let runtime_monitor = RuntimeMonitor::new(&handle);
-    //
-    //     // Monitor at 120-second intervals
-    //     for metrics in runtime_monitor.intervals() {
-    //         log_runtime_metrics(&metrics);
-    //         tokio::time::sleep(Duration::from_secs(120)).await;
-    //     }
-    // });
-    //
-    // println!("Runtime monitoring started");
-}
 
 /// Log runtime metrics with performance analysis
 #[allow(dead_code)]
@@ -619,7 +665,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     let table_path = shard_view.table_path();
     let files_meta = shard_view.files_metadata();
 
-    io_runtime.block_on(async move {
+    io_runtime.block_on(QUERY_EXECUTION_MONITOR.instrument(async move {
 
         let result = query_executor::execute_query_with_cross_rt_stream(
             table_path,
@@ -645,7 +691,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
                 });
             }
         }
-    });
+    }));
 }
 
 #[no_mangle]
@@ -680,7 +726,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_fetchSegm
     let shard_view = unsafe { &*(shard_view_ptr as *const ShardView) };
     let files_meta = shard_view.files_metadata();
 
-    io_runtime.block_on(async move {
+    io_runtime.block_on(SEGMENT_STATS_MONITOR.instrument(async move {
         let file_stats = util::fetch_segment_statistics(files_meta).await;
         match file_stats {
             Ok(map) => {
@@ -695,7 +741,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_fetchSegm
                 });
             }
         }
-    });
+    }));
 }
 
 #[no_mangle]
@@ -732,15 +778,16 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamNex
     let stream_ptr = stream;
     let io_runtime = manager.io_runtime.clone();
 
+    // TODO : this can be 'io_runtime.block_on' if we see rust workers getting overloaded
+    // benchmarks so far are good with spawn
+    // TODO : Thread leaks in tests if its spawn
     io_runtime.block_on(async move {
 
         let stream = unsafe { &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
-        let result = stream.try_next().await;
-
-        // Uncomment for monitoring stream next
-        // let result = STREAM_NEXT_MONITOR.instrument(async {
-        //         stream.try_next().await
-        // }).await;
+        // Poll the stream with monitoring
+        let result = STREAM_NEXT_MONITOR.instrument(async {
+            stream.try_next().await
+        }).await;
 
         // Use thread-local JNI env - auto-attaches!
         with_jni_env(|env| {
@@ -872,7 +919,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeFe
     let io_runtime = manager.io_runtime.clone();
     let cpu_executor = manager.cpu_executor();
 
-    io_runtime.block_on(async {
+    io_runtime.block_on(FETCH_PHASE_MONITOR.instrument(async {
         match query_executor::execute_fetch_phase(
             table_path,
             files_metadata,
@@ -891,7 +938,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeFe
                 0 // return 0
             }
         }
-    })
+    }))
 }
 
 #[no_mangle]
@@ -902,6 +949,8 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamClo
 ) {
     let _ = unsafe { Box::from_raw(stream as *mut RecordBatchStreamAdapter<CrossRtStream>) };
 }
+
+
 
 /// Execute an indexed query asynchronously.
 ///
@@ -1039,7 +1088,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeIn
     // worker threads handle the tasks concurrently.
     let (tx, rx) = std::sync::mpsc::channel();
 
-    io_runtime.spawn(async move {
+    io_runtime.spawn(INDEXED_QUERY_EXECUTION_MONITOR.instrument(async move {
         let result = indexed_query_executor::execute_indexed_query_stream(
             weight_ptr,
             seg_max_docs,
@@ -1055,7 +1104,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeIn
             cpu_executor,
         ).await;
         let _ = tx.send(result);
-    });
+    }));
 
     let result = rx.recv().unwrap_or_else(|_| Err(DataFusionError::Execution("Channel closed".to_string())));
 
