@@ -49,13 +49,25 @@ public final class DataFusionRuntimeEnv implements AutoCloseable {
     );
 
     /**
+     * Controls whether tokio task-monitor instrumentation is enabled for per-task metrics.
+     * Runtime-level metrics (atomic counter reads) are always collected regardless of this setting.
+     */
+    public static final Setting<Boolean> DATAFUSION_METRICS_ENABLED = Setting.boolSetting(
+        "datafusion.metrics.enabled",
+        true,
+        Setting.Property.Final,
+        Setting.Property.NodeScope
+    );
+
+    /**
      * Creates a new DataFusion runtime environment.
      */
     public DataFusionRuntimeEnv(ClusterService clusterService, String spill_dir) {
         long memoryLimit = clusterService.getClusterSettings().get(DATAFUSION_MEMORY_POOL_CONFIGURATION).getBytes();
         long spillLimit = clusterService.getClusterSettings().get(DATAFUSION_SPILL_MEMORY_LIMIT_CONFIGURATION).getBytes();
         long cacheManagerConfigPtr = CacheUtils.createCacheConfig(clusterService.getClusterSettings());
-        NativeBridge.initTokioRuntimeManager(Runtime.getRuntime().availableProcessors());
+        boolean metricsEnabled = clusterService.getClusterSettings().get(DATAFUSION_METRICS_ENABLED);
+        NativeBridge.initTokioRuntimeManager(Runtime.getRuntime().availableProcessors(), metricsEnabled);
         this.runtimeHandle = new GlobalRuntimeHandle(memoryLimit, cacheManagerConfigPtr, spill_dir, spillLimit);
         System.out.println("Runtime : " + this.runtimeHandle);
         this.cacheManager = new CacheManager(this.runtimeHandle);

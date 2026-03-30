@@ -76,6 +76,7 @@ use std::result;
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::TryStreamExt;
+use futures::future::Either;
 
 pub type Result<T, E = DataFusionError> = result::Result<T, E>;
 
@@ -120,6 +121,26 @@ static INDEXED_QUERY_EXECUTION_MONITOR: Lazy<TaskMonitor> = Lazy::new(|| {
 
 // Global runtime manager
 static TOKIO_RUNTIME_MANAGER: OnceLock<Arc<RuntimeManager>> = OnceLock::new();
+
+// Whether task-monitor instrumentation is enabled (set once from Java)
+static METRICS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// Returns true if task-monitor instrumentation is enabled.
+pub fn metrics_enabled() -> bool {
+    *METRICS_ENABLED.get().unwrap_or(&true)
+}
+
+/// Conditionally instruments a future with a TaskMonitor.
+/// When metrics are disabled, the future runs without instrumentation overhead.
+macro_rules! maybe_instrument {
+    ($monitor:expr, $fut:expr) => {
+        if metrics_enabled() {
+            futures::future::Either::Left($monitor.instrument($fut))
+        } else {
+            futures::future::Either::Right($fut)
+        }
+    };
+}
 
 // Global JavaVM reference
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
@@ -220,7 +241,11 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_initTokio
     env: JNIEnv,
     _class: JClass,
     cpu_threads: jint,
+    metrics_enabled: jboolean,
 ) {
+    // Store the metrics flag before anything else
+    METRICS_ENABLED.get_or_init(|| metrics_enabled != 0);
+
     // Initialize JavaVM for async callbacks from Tokio worker threads
     // This is needed so worker threads can attach to JVM and call ActionListener methods
     JAVA_VM.get_or_init(|| {
@@ -228,7 +253,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_initTokio
     });
 
     TOKIO_RUNTIME_MANAGER.get_or_init(|| {
-        log_info!("Runtime manager initialized with {} CPU threads", cpu_threads);
+        log_info!("Runtime manager initialized with {} CPU threads, metrics_enabled={}", cpu_threads, metrics_enabled != 0);
         let manager = Arc::new(RuntimeManager::new(cpu_threads as usize));
 
         manager
@@ -665,7 +690,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     let table_path = shard_view.table_path();
     let files_meta = shard_view.files_metadata();
 
-    io_runtime.block_on(QUERY_EXECUTION_MONITOR.instrument(async move {
+    io_runtime.block_on(maybe_instrument!(QUERY_EXECUTION_MONITOR, async move {
 
         let result = query_executor::execute_query_with_cross_rt_stream(
             table_path,
@@ -726,7 +751,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_fetchSegm
     let shard_view = unsafe { &*(shard_view_ptr as *const ShardView) };
     let files_meta = shard_view.files_metadata();
 
-    io_runtime.block_on(SEGMENT_STATS_MONITOR.instrument(async move {
+    io_runtime.block_on(maybe_instrument!(SEGMENT_STATS_MONITOR, async move {
         let file_stats = util::fetch_segment_statistics(files_meta).await;
         match file_stats {
             Ok(map) => {
@@ -785,7 +810,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamNex
 
         let stream = unsafe { &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
         // Poll the stream with monitoring
-        let result = STREAM_NEXT_MONITOR.instrument(async {
+        let result = maybe_instrument!(STREAM_NEXT_MONITOR, async {
             stream.try_next().await
         }).await;
 
@@ -919,7 +944,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeFe
     let io_runtime = manager.io_runtime.clone();
     let cpu_executor = manager.cpu_executor();
 
-    io_runtime.block_on(FETCH_PHASE_MONITOR.instrument(async {
+    io_runtime.block_on(maybe_instrument!(FETCH_PHASE_MONITOR, async {
         match query_executor::execute_fetch_phase(
             table_path,
             files_metadata,
@@ -1088,7 +1113,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeIn
     // worker threads handle the tasks concurrently.
     let (tx, rx) = std::sync::mpsc::channel();
 
-    io_runtime.spawn(INDEXED_QUERY_EXECUTION_MONITOR.instrument(async move {
+    io_runtime.spawn(maybe_instrument!(INDEXED_QUERY_EXECUTION_MONITOR, async move {
         let result = indexed_query_executor::execute_indexed_query_stream(
             weight_ptr,
             seg_max_docs,

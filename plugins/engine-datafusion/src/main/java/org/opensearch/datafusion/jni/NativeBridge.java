@@ -32,7 +32,8 @@ public final class NativeBridge {
 
     // Tokio runtime
     // Initialize tokio runtime manager once on startup
-    public static native void initTokioRuntimeManager(int cpuThreads);
+    // metricsEnabled: when true, TaskMonitor instrumentation wraps async futures for per-task metrics
+    public static native void initTokioRuntimeManager(int cpuThreads, boolean metricsEnabled);
     // Shutdown tokio runtime manager on datafusion service
     public static native void shutdownTokioRuntimeManager();
 
