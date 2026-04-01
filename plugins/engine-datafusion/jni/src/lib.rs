@@ -13,10 +13,11 @@ use std::num::NonZeroUsize;
  */
 use std::ptr::addr_of_mut;
 use std::sync::atomic::{AtomicU64, Ordering};
-use jni::objects::{JByteArray, JClass, JMap, JObject};
+use jni::objects::{GlobalRef, JByteArray, JClass, JMap, JObject};
 use jni::objects::JLongArray;
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jlongArray, jstring};
 use jni::{JNIEnv, JavaVM};
+use std::future::Future;
 use std::sync::{Arc, OnceLock};
 use arrow_array::{Array, RecordBatch, StructArray};
 use arrow_array::ffi::FFI_ArrowArray;
@@ -71,7 +72,7 @@ use tokio::runtime::Runtime;
 use std::result;
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use futures::TryStreamExt;
+use futures::{TryStreamExt, FutureExt};
 
 pub type Result<T, E = DataFusionError> = result::Result<T, E>;
 
@@ -236,8 +237,49 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_stats<'lo
     }
 }
 
+/// Extract a human-readable message from a panic payload.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
 
+/// Spawn an async task on `runtime` that calls an ActionListener exactly once.
+fn spawn_jni_task<Fut, T, FOk>(
+    runtime: &tokio::runtime::Handle,
+    task_name: &'static str,
+    listener_ref: GlobalRef,
+    task: Fut,
+    on_ok: FOk,
+)
+where
+    Fut: Future<Output = Result<T, DataFusionError>> + Send + 'static,
+    T: Send + 'static,
+    FOk: FnOnce(&mut JNIEnv, &GlobalRef, T) + Send + 'static,
+{
+    let _ = runtime.spawn(async move {
+        let result = std::panic::AssertUnwindSafe(task)
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|panic| {
+                let msg = panic_message(&panic);
+                log_error!("{} panicked: {}", task_name, msg);
+                Err(DataFusionError::Execution(format!("{} panicked: {}", task_name, msg)))
+            });
 
+        with_jni_env(|env| match result {
+            Ok(value) => on_ok(env, &listener_ref, value),
+            Err(e) => {
+                log_error!("{} failed: {}", task_name, e);
+                set_action_listener_error_global(env, &listener_ref, &e);
+            }
+        });
+    });
+}
 /// Initialize the logger for Rust->Java logging bridge.
 /// This should be called once when the native library is loaded.
 #[no_mangle]
@@ -694,9 +736,11 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     let table_path = shard_view.table_path();
     let files_meta = shard_view.files_metadata();
 
-    io_runtime.block_on(QUERY_EXECUTION_MONITOR.instrument(async move {
-
-        let result = query_executor::execute_query_with_cross_rt_stream(
+    spawn_jni_task(
+        &io_runtime,
+        "executeQueryPhaseAsync",
+        listener_ref,
+        QUERY_EXECUTION_MONITOR.instrument(query_executor::execute_query_with_cross_rt_stream(
             table_path,
             files_meta,
             table_name,
@@ -705,22 +749,9 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
             target_partitions,
             runtime,
             cpu_executor,
-        ).await;
-
-        match result {
-            Ok(stream_ptr) => {
-                with_jni_env(|env| {
-                    set_action_listener_ok_global(env, &listener_ref, stream_ptr);
-                });
-            }
-            Err(e) => {
-                with_jni_env(|env| {
-                    log_error!("Query execution failed: {}", e);
-                    set_action_listener_error_global(env, &listener_ref, &e);
-                });
-            }
-        }
-    }));
+        )),
+        |env, listener_ref, stream_pointer| set_action_listener_ok_global(env, listener_ref, stream_pointer),
+    );
 }
 
 #[no_mangle]
@@ -763,22 +794,13 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_fetchSegm
     let shard_view = unsafe { &*(shard_view_ptr as *const ShardView) };
     let files_meta = shard_view.files_metadata();
 
-    io_runtime.block_on(SEGMENT_STATS_MONITOR.instrument(async move {
-        let file_stats = util::fetch_segment_statistics(files_meta).await;
-        match file_stats {
-            Ok(map) => {
-                with_jni_env(|env| {
-                    set_action_listener_ok_global_with_map(env, &listener_ref, &map);
-                });
-            }
-            Err(e) => {
-                with_jni_env(|env| {
-                    log_error!("Collecting file stats failed: {}", e);
-                    set_action_listener_error_global(env, &listener_ref, &e);
-                });
-            }
-        }
-    }));
+    spawn_jni_task(
+        &io_runtime,
+        "fetchSegmentStats",
+        listener_ref,
+        SEGMENT_STATS_MONITOR.instrument(async move { util::fetch_segment_statistics(files_meta).await }),
+        |env, listener_ref, stats_map| set_action_listener_ok_global_with_map(env, listener_ref, &stats_map),
+    );
 }
 
 #[no_mangle]
@@ -823,42 +845,34 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamNex
     let stream_ptr = stream;
     let io_runtime = manager.io_runtime.clone();
 
-    // TODO : this can be 'io_runtime.block_on' if we see rust workers getting overloaded
-    // benchmarks so far are good with spawn
-    // TODO : Thread leaks in tests if its spawn
-    io_runtime.block_on(async move {
+    // Ensure stream_ptr lifetime is guaranteed beyond the spawn boundary
+    spawn_jni_task(
+        &io_runtime,
+        "streamNext",
+        listener_ref,
+        STREAM_NEXT_MONITOR.instrument(async move {
+            let stream = unsafe { &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
+            let result = stream.try_next().await?;
 
-        let stream = unsafe { &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
-        // Poll the stream with monitoring
-        let result = STREAM_NEXT_MONITOR.instrument(async {
-            stream.try_next().await
-        }).await;
-
-        // Use thread-local JNI env - auto-attaches!
-        with_jni_env(|env| {
             match result {
-                Ok(Some(batch)) => {
+                Some(batch) => {
                     log_info!("[RUST streamNext] Batch produced: {} rows, {} columns, schema: {:?}",
                         batch.num_rows(), batch.num_columns(), batch.schema().fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>());
                     // Convert to FFI
                     let struct_array: StructArray = batch.into();
                     let array_data = struct_array.into_data();
                     let ffi_array = FFI_ArrowArray::new(&array_data);
-                    let ffi_array_ptr = Box::into_raw(Box::new(ffi_array));
-                    set_action_listener_ok_global(env, &listener_ref, ffi_array_ptr as jlong);
+                    Ok(Box::into_raw(Box::new(ffi_array)) as jlong)
                 }
-                Ok(None) => {
+                None => {
                     log_info!("[RUST streamNext] End of stream reached");
                     // End of stream
-                    set_action_listener_ok_global(env, &listener_ref, 0);
-                }
-                Err(err) => {
-                    log_error!("Stream next failed: {}", err);
-                    set_action_listener_error_global(env, &listener_ref, &err);
+                    Ok(0)
                 }
             }
-        });
-    });
+        }),
+        |env, listener_ref, data_pointer| set_action_listener_ok_global(env, listener_ref, data_pointer),
+    );
     // Function returns immediately to java - async rust work continues in background
 }
 
