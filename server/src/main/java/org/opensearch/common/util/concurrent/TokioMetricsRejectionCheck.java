@@ -31,7 +31,7 @@ final class TokioMetricsRejectionCheck implements QueueRejectionCheck {
             return false;
         }
         long depth = stats.getCpuRuntime().getGlobalQueueDepth();
-        long threshold = stats.getCpuRuntime().getWorkersCount() * 10;
+        long threshold = 2;
         return depth >= threshold;
     }
 }
