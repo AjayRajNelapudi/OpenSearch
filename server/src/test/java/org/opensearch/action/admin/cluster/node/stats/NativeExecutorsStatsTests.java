@@ -25,9 +25,7 @@ import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -110,20 +108,6 @@ public class NativeExecutorsStatsTests {
     @Provide
     Arbitrary<NativeExecutorsStats> nativeExecutorsStatsWithoutPerOp() {
         return dataFusionPluginStats().map(NativeExecutorsStats::new);
-    }
-
-    @Provide
-    Arbitrary<Long> rejectionCount() {
-        return Arbitraries.longs().between(0, Long.MAX_VALUE / 2);
-    }
-
-    @Provide
-    Arbitrary<NativeExecutorsStats> nativeExecutorsStatsWithRejections() {
-        return Combinators.combine(
-            dataFusionPluginStats(),
-            perOperationMap(),
-            rejectionCount()
-        ).as(NativeExecutorsStats::new);
     }
 
     // --- Property tests ---
@@ -228,18 +212,13 @@ public class NativeExecutorsStatsTests {
             expectedTotalAcquired += values[1];
         }
 
-        // total_in_flight and total_acquired are now in the tasks section, not task_monitors
+        // total_in_flight and total_acquired should not be inside task_monitors
         assertFalse(taskMonitors.containsKey("total_in_flight"),
             "total_in_flight should not be inside task_monitors");
         assertFalse(taskMonitors.containsKey("total_acquired"),
             "total_acquired should not be inside task_monitors");
 
-        assertTrue(json.containsKey("tasks"), "tasks section should be present when perOp is non-empty");
-        Map<String, Object> tasks = (Map<String, Object>) json.get("tasks");
-        assertEquals(expectedTotalInFlight, ((Number) tasks.get("total_in_flight")).longValue(),
-            "total_in_flight should equal sum of per-operation in_flight values");
-        assertEquals(expectedTotalAcquired, ((Number) tasks.get("total_acquired")).longValue(),
-            "total_acquired should equal sum of per-operation acquired values");
+        assertFalse(json.containsKey("tasks"), "tasks section should no longer be present");
     }
 
     @Property(tries = 100)
@@ -256,138 +235,7 @@ public class NativeExecutorsStatsTests {
         assertFalse(json.containsKey("native_inflight"),
             "native_inflight should be absent when per-operation map is empty");
         assertTrue(json.containsKey("task_monitors"));
-        // tasks section always present with zeros when no trackers registered
-        assertTrue(json.containsKey("tasks"), "tasks section should always be present");
-        Map<String, Object> tasks = (Map<String, Object>) json.get("tasks");
-        assertEquals(0L, ((Number) tasks.get("total_in_flight")).longValue());
-        assertEquals(0L, ((Number) tasks.get("total_acquired")).longValue());
-        assertEquals(0L, ((Number) tasks.get("rejections")).longValue());
-    }
-
-    // ===================================================================
-    // Feature: tokio-metrics-rejection, Property 6: Stats serialization round-trip
-    // **Validates: Requirements 4.3**
-    // ===================================================================
-
-    @Property(tries = 100)
-    void statsSerializationRoundTripWithRejections(
-            @ForAll("nativeExecutorsStatsWithRejections") NativeExecutorsStats original) throws IOException {
-        BytesStreamOutput out = new BytesStreamOutput();
-        original.writeTo(out);
-        StreamInput in = out.bytes().streamInput();
-        NativeExecutorsStats deserialized = new NativeExecutorsStats(in);
-
-        assertEquals(original, deserialized);
-        assertEquals(original.getRejections(), deserialized.getRejections(),
-            "rejections counter should survive serialization round-trip");
-        assertEquals(original.getPerOperationInflight().size(), deserialized.getPerOperationInflight().size());
-    }
-
-    // ===================================================================
-    // Feature: tokio-metrics-rejection, Property 7: Stats XContent contains required fields
-    // **Validates: Requirements 4.2, 4.4**
-    // ===================================================================
-
-    @Property(tries = 100)
-    @SuppressWarnings("unchecked")
-    void xContentContainsTasksSectionWithRequiredFields(
-            @ForAll("nativeExecutorsStatsWithRejections") NativeExecutorsStats stats) throws IOException {
-        XContentBuilder builder = XContentFactory.jsonBuilder();
-        builder.startObject();
-        stats.toXContent(builder, ToXContent.EMPTY_PARAMS);
-        builder.endObject();
-        Map<String, Object> json = XContentHelper.convertToMap(
-            BytesReference.bytes(builder), true, builder.contentType()).v2();
-
-        // tasks section should be present when perOperationInflight is non-empty
-        assertTrue(json.containsKey("tasks"),
-            "tasks section should be present when plugin is installed");
-        Map<String, Object> tasks = (Map<String, Object>) json.get("tasks");
-        assertNotNull(tasks);
-        assertTrue(tasks.containsKey("total_in_flight"),
-            "tasks section should contain total_in_flight");
-        assertTrue(tasks.containsKey("total_acquired"),
-            "tasks section should contain total_acquired");
-        assertTrue(tasks.containsKey("rejections"),
-            "tasks section should contain rejections");
-        assertEquals(stats.getRejections(), ((Number) tasks.get("rejections")).longValue(),
-            "rejections value should match the stats object");
-    }
-
-    // ===================================================================
-    // Unit tests for NativeExecutorsStats tasks section (Task 7.4)
-    // **Validates: Requirements 4.2, 4.3, 4.4, 4.5**
-    // ===================================================================
-
-    @Property(tries = 1)
-    void serializationRoundTripWithRejectionCounter() throws IOException {
-        DataFusionPluginStats pluginStats = createMinimalPluginStats();
-        Map<String, long[]> perOp = new LinkedHashMap<>();
-        perOp.put("query_execution", new long[] { 5, 100 });
-        perOp.put("stream_next", new long[] { 3, 200 });
-        long rejections = 42;
-
-        NativeExecutorsStats original = new NativeExecutorsStats(pluginStats, perOp, rejections);
-        BytesStreamOutput out = new BytesStreamOutput();
-        original.writeTo(out);
-        StreamInput in = out.bytes().streamInput();
-        NativeExecutorsStats deserialized = new NativeExecutorsStats(in);
-
-        assertEquals(original, deserialized);
-        assertEquals(42, deserialized.getRejections());
-    }
-
-    @Property(tries = 1)
-    @SuppressWarnings("unchecked")
-    void xContentIncludesTasksSectionWithAllFields() throws IOException {
-        DataFusionPluginStats pluginStats = createMinimalPluginStats();
-        Map<String, long[]> perOp = new LinkedHashMap<>();
-        perOp.put("query_execution", new long[] { 5, 100 });
-        perOp.put("stream_next", new long[] { 3, 200 });
-        long rejections = 42;
-
-        NativeExecutorsStats stats = new NativeExecutorsStats(pluginStats, perOp, rejections);
-        Map<String, Object> json = toJsonMap(stats);
-
-        assertTrue(json.containsKey("tasks"), "tasks section should be present");
-        Map<String, Object> tasks = (Map<String, Object>) json.get("tasks");
-        assertEquals(8L, ((Number) tasks.get("total_in_flight")).longValue());
-        assertEquals(300L, ((Number) tasks.get("total_acquired")).longValue());
-        assertEquals(42L, ((Number) tasks.get("rejections")).longValue());
-    }
-
-    @Property(tries = 1)
-    @SuppressWarnings("unchecked")
-    void totalInFlightAndTotalAcquiredNotInsideTaskMonitors() throws IOException {
-        DataFusionPluginStats pluginStats = createMinimalPluginStats();
-        Map<String, long[]> perOp = new LinkedHashMap<>();
-        perOp.put("query_execution", new long[] { 5, 100 });
-
-        NativeExecutorsStats stats = new NativeExecutorsStats(pluginStats, perOp, 10);
-        Map<String, Object> json = toJsonMap(stats);
-
-        Map<String, Object> taskMonitors = (Map<String, Object>) json.get("task_monitors");
-        assertNotNull(taskMonitors);
-        assertFalse(taskMonitors.containsKey("total_in_flight"),
-            "total_in_flight should not be inside task_monitors");
-        assertFalse(taskMonitors.containsKey("total_acquired"),
-            "total_acquired should not be inside task_monitors");
-    }
-
-    @Property(tries = 1)
-    @SuppressWarnings("unchecked")
-    void pluginInstalledButNoTrackersShowsTasksWithZeros() throws IOException {
-        DataFusionPluginStats pluginStats = createMinimalPluginStats();
-        // Empty perOperationInflight = no trackers registered yet, but plugin is installed
-        NativeExecutorsStats stats = new NativeExecutorsStats(pluginStats);
-        Map<String, Object> json = toJsonMap(stats);
-
-        assertTrue(json.containsKey("tasks"),
-            "tasks section should always be present when NativeExecutorsStats is constructed");
-        Map<String, Object> tasks = (Map<String, Object>) json.get("tasks");
-        assertEquals(0L, ((Number) tasks.get("total_in_flight")).longValue());
-        assertEquals(0L, ((Number) tasks.get("total_acquired")).longValue());
-        assertEquals(0L, ((Number) tasks.get("rejections")).longValue());
+        assertFalse(json.containsKey("tasks"), "tasks section should no longer be present");
     }
 
     // --- Helpers ---

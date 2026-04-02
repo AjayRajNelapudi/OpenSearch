@@ -269,10 +269,9 @@ public class NodeService implements Closeable {
         DataFusionPluginStats dataFusionPluginStats = (nativeExecutors && dataFusionService != null) ? dataFusionService.getOrRefresh() : null;
         NativeExecutorsStats nativeExecutorsStats;
         if (dataFusionPluginStats != null) {
-            long rejections = nativeMetricsCollectorService != null ? nativeMetricsCollectorService.getRejectionCount() : 0;
             Collection<NativeExecutorTracker> trackers = NativeExecutorTrackerRegistry.getAll();
             if (!trackers.isEmpty()) {
-                nativeExecutorsStats = new NativeExecutorsStats(dataFusionPluginStats, new ArrayList<>(trackers), rejections);
+                nativeExecutorsStats = new NativeExecutorsStats(dataFusionPluginStats, new ArrayList<>(trackers));
             } else {
                 nativeExecutorsStats = new NativeExecutorsStats(dataFusionPluginStats);
             }

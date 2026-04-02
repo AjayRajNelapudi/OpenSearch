@@ -143,16 +143,4 @@ public class NativeMetricsCollectorServiceTests {
         assertSame(stats2, NativeMetricsSnapshot.get().getDataFusionStats());
     }
 
-    @Test
-    void rejectionCounterStartsAtZeroAndIncrements() {
-        NativeMetricsCollectorService service = new NativeMetricsCollectorService(null);
-        assertEquals(0, service.getRejectionCount());
-
-        service.incrementRejectionCount();
-        assertEquals(1, service.getRejectionCount());
-
-        service.incrementRejectionCount();
-        service.incrementRejectionCount();
-        assertEquals(3, service.getRejectionCount());
-    }
 }

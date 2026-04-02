@@ -18,8 +18,6 @@ import org.opensearch.vectorized.execution.metrics.DataFusionPluginStats;
 import org.opensearch.vectorized.execution.metrics.MetricProvider;
 import org.opensearch.vectorized.execution.metrics.NativeMetricsSnapshot;
 
-import java.util.concurrent.atomic.AtomicLong;
-
 /**
  * Periodically collects native runtime metrics (Tokio CPU/IO) via the registered
  * {@link MetricProvider} and publishes them to {@link NativeMetricsSnapshot}.
@@ -38,7 +36,6 @@ public class NativeMetricsCollectorService extends AbstractLifecycleComponent {
     private final ThreadPool threadPool;
     private volatile MetricProvider<DataFusionPluginStats> metricProvider;
     private volatile Scheduler.Cancellable scheduledFuture;
-    private final AtomicLong rejectionCount = new AtomicLong();
 
     public NativeMetricsCollectorService(ThreadPool threadPool) {
         this.threadPool = threadPool;
@@ -50,14 +47,6 @@ public class NativeMetricsCollectorService extends AbstractLifecycleComponent {
      */
     public void registerMetricProvider(MetricProvider<DataFusionPluginStats> provider) {
         this.metricProvider = provider;
-    }
-
-    public long getRejectionCount() {
-        return rejectionCount.get();
-    }
-
-    public void incrementRejectionCount() {
-        rejectionCount.incrementAndGet();
     }
 
     @Override

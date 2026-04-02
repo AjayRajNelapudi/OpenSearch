@@ -235,7 +235,11 @@ public class OpenSearchExecutors {
                 new TokioMetricsRejectionCheck(),
                 new NativeInflightRejectionCheck(MAX_NATIVE_IN_FLIGHT)
             );
-            queue = new CompositeResizableBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity, checks);
+            queue = new CompositeResizableBlockingQueue<>(
+                ConcurrentCollections.<Runnable>newBlockingQueue(),
+                queueCapacity,
+                checks
+            );
         } else {
             queue = new ResizableBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity);
         }
