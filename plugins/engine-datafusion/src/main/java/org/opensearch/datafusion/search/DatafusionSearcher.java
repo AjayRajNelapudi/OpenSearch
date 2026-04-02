@@ -10,7 +10,7 @@ package org.opensearch.datafusion.search;
 
 import org.apache.lucene.store.AlreadyClosedException;
 import org.opensearch.core.action.ActionListener;
-import org.opensearch.datafusion.jni.NativeBridge;
+import org.opensearch.datafusion.jni.TrackedNativeBridge;
 import org.opensearch.index.engine.EngineSearcher;
 import org.opensearch.vectorized.execution.search.spi.RecordBatchStream;
 
@@ -47,7 +47,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
             String[] includeFields = Objects.isNull(datafusionQuery.getIncludeFields()) ? new String[]{} : datafusionQuery.getIncludeFields().toArray(String[]::new);
             String[] excludeFields = Objects.isNull(datafusionQuery.getExcludeFields()) ? new String[]{} : datafusionQuery.getExcludeFields().toArray(String[]::new);
 
-            return NativeBridge.executeFetchPhase(reader.getReaderPtr(), row_ids, includeFields, excludeFields, runtimePtr);
+            return TrackedNativeBridge.executeFetchPhaseWithTracking(reader.getReaderPtr(), row_ids, includeFields, excludeFields, runtimePtr);
         }
         throw new RuntimeException("Can be only called for fetch phase");
     }
@@ -55,7 +55,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
     @Override
     public CompletableFuture<Long> searchAsync(DatafusionQuery datafusionQuery, Long runtimePtr) {
         CompletableFuture<Long> result = new CompletableFuture<>();
-        NativeBridge.executeQueryPhaseAsync(reader.getReaderPtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes(), datafusionQuery.getQueryPlanExplainEnabled(), datafusionQuery.getTargetPartitionsCount(), runtimePtr, new ActionListener<Long>() {
+        TrackedNativeBridge.executeQueryPhaseWithTracking(reader.getReaderPtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes(), datafusionQuery.getQueryPlanExplainEnabled(), datafusionQuery.getTargetPartitionsCount(), runtimePtr, new ActionListener<Long>() {
             @Override
             public void onResponse(Long streamPointer) {
                 if (streamPointer == 0) {

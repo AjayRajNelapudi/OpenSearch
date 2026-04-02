@@ -48,10 +48,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class SizeBlockingQueue<E> extends AbstractQueue<E> implements BlockingQueue<E> {
 
-    private final BlockingQueue<E> queue;
+    protected final BlockingQueue<E> queue;
     private final int capacity;
 
-    private final AtomicInteger size = new AtomicInteger();
+    protected final AtomicInteger size = new AtomicInteger();
 
     public SizeBlockingQueue(BlockingQueue<E> queue, int capacity) {
         assert capacity >= 0;

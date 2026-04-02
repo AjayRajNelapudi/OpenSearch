@@ -40,7 +40,7 @@ import java.util.concurrent.BlockingQueue;
  *
  * @opensearch.internal
  */
-final class ResizableBlockingQueue<E> extends SizeBlockingQueue<E> {
+class ResizableBlockingQueue<E> extends SizeBlockingQueue<E> {
 
     private volatile int capacity;
 

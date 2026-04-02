@@ -68,4 +68,5 @@ public interface SearchEnginePlugin extends SearchPlugin{
     default MetricProvider<? extends PluginStats> getMetricProvider() {
         return null;
     }
+
 }

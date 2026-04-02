@@ -48,7 +48,6 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
-import org.opensearch.datafusion.jni.NativeBridge;
 import org.opensearch.vectorized.execution.metrics.DataFusionPluginStats;
 import org.opensearch.vectorized.execution.metrics.MetricProvider;
 import org.opensearch.vectorized.execution.search.spi.RecordBatchStream;
@@ -81,12 +80,14 @@ import static org.opensearch.datafusion.core.DataFusionRuntimeEnv.DATAFUSION_SPI
  */
 public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEnginePlugin, AnalyticsBackEndPlugin, ExtensiblePlugin, SearchAnalyticsBackEndPlugin {
 
+    private final Settings settings;
     private DataFusionService dataFusionService;
     private DataFusionMetricProvider metricProvider;
 
     public DataFusionService getDataFusionService() {
         return dataFusionService;
     }
+
     private final boolean isDataFusionEnabled;
 
     /**
@@ -94,6 +95,7 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
      * @param settings The settings for the DataFusionPlugin.
      */
     public DataFusionPlugin(Settings settings) {
+        this.settings = settings;
         // For now, DataFusion is always enabled if the plugin is loaded
         // In the future, this could be controlled by a feature flag
         this.isDataFusionEnabled = true;
@@ -140,8 +142,9 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
         for(DataFormat format : this.getSupportedFormats()) {
             dataSourceCodecs.get(format);
         }
-        // return Collections.emptyList();
-        return Collections.singletonList(dataFusionService);
+        List<Object> components = new ArrayList<>();
+        components.add(dataFusionService);
+        return components;
     }
 
     @Override

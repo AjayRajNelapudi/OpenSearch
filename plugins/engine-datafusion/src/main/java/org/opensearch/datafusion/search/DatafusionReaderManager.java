@@ -36,8 +36,6 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
     private String path;
     private String dataFormat;
     private Consumer<List<String>> onFilesAdded;
-//    private final Lock refreshLock = new ReentrantLock();
-//    private final List<ReferenceManager.RefreshListener> refreshListeners = new CopyOnWriteArrayList();
 
     public DatafusionReaderManager(String path, Collection<FileMetadata> files, String dataFormat) throws IOException {
         WriterFileSet writerFileSet = new WriterFileSet(Path.of(URI.create("file:///" + path)), 1, 0, false);

@@ -188,6 +188,24 @@ public class OpenSearchExecutors {
         ThreadContext contextHolder,
         AtomicReference<RunnableTaskExecutionListener> runnableTaskListener
     ) {
+        return newResizable(name, size, queueCapacity, threadFactory, contextHolder, runnableTaskListener, false);
+    }
+
+    /**
+     * Creates a new resizable thread pool executor. When {@code nativeInflightAware} is {@code true},
+     * the queue is a {@link NativeInflightAwareQueue} that reads trackers from the
+     * {@code NativeExecutorTrackerRegistry} at offer time.
+     * When {@code false}, a standard {@link ResizableBlockingQueue} is used.
+     */
+    public static OpenSearchThreadPoolExecutor newResizable(
+        String name,
+        int size,
+        int queueCapacity,
+        ThreadFactory threadFactory,
+        ThreadContext contextHolder,
+        AtomicReference<RunnableTaskExecutionListener> runnableTaskListener,
+        boolean nativeInflightAware
+    ) {
 
         if (queueCapacity <= 0) {
             throw new IllegalArgumentException("queue capacity for [" + name + "] executor must be positive, got: " + queueCapacity);
@@ -203,13 +221,20 @@ public class OpenSearchExecutors {
             runnableWrapper = TimedRunnable::new;
         }
 
+        ResizableBlockingQueue<Runnable> queue;
+        if (nativeInflightAware) {
+            queue = new NativeInflightAwareQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity);
+        } else {
+            queue = new ResizableBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity);
+        }
+
         return new QueueResizableOpenSearchThreadPoolExecutor(
             name,
             size,
             size,
             0,
             TimeUnit.MILLISECONDS,
-            new ResizableBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity),
+            queue,
             runnableWrapper,
             threadFactory,
             new OpenSearchAbortPolicy(),

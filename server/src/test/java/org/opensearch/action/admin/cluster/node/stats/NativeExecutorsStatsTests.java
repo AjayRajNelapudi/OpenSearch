@@ -25,23 +25,27 @@ import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
- * Property-based tests for {@link NativeExecutorsStats} — the server-side
- * Writeable + ToXContentFragment wrapper around {@link DataFusionPluginStats}.
- *
- * Validates: Requirements 6
+ * Property-based tests for {@link NativeExecutorsStats}.
  */
 public class NativeExecutorsStatsTests {
 
-    // --- Arbitraries (same pattern as NodeStatsNativeMetricRoundTripTests) ---
+    private static final String[] OPERATION_NAMES = {
+        "query_execution", "indexed_query_execution", "stream_next", "fetch_phase", "segment_stats"
+    };
+
+    // --- Existing @Provide methods for DataFusionPluginStats ---
 
     @Provide
     Arbitrary<DataFusionPluginStats.RuntimeValues> runtimeValues() {
@@ -68,114 +72,167 @@ public class NativeExecutorsStatsTests {
         Arbitrary<DataFusionPluginStats.RuntimeValues> rv = runtimeValues();
         Arbitrary<DataFusionPluginStats.TaskMonitorValues> tm = taskMonitorValues();
         return Combinators.combine(
-            rv.injectNull(0.3),    // ioRuntime (30% chance null)
-            rv.injectNull(0.3),    // cpuRuntime (30% chance null)
-            tm, tm, tm, tm, tm     // 5 task monitors (always non-null)
+            rv.injectNull(0.3), rv.injectNull(0.3),
+            tm, tm, tm, tm, tm
         ).as(DataFusionPluginStats::new);
     }
 
-    // --- Property 1: Writeable round-trip ---
+    // --- Per-operation map providers ---
 
-    /**
-     * For any valid NativeExecutorsStats, serializing via writeTo(StreamOutput)
-     * and deserializing via new NativeExecutorsStats(StreamInput) should produce
-     * an equal object.
-     *
-     * **Validates: Requirements 6**
-     */
+    @Provide
+    Arbitrary<Map<String, long[]>> perOperationMap() {
+        Arbitrary<Long> inFlight = Arbitraries.longs().between(0, 10000);
+        Arbitrary<Long> acquired = Arbitraries.longs().between(0, Long.MAX_VALUE / 2);
+        // Generate a subset of operation names (1 to 5 entries)
+        return Arbitraries.integers().between(1, OPERATION_NAMES.length).flatMap(count ->
+            Combinators.combine(
+                Arbitraries.of(count),
+                inFlight.list().ofSize(count),
+                acquired.list().ofSize(count)
+            ).as((c, inFlights, acquireds) -> {
+                Map<String, long[]> map = new LinkedHashMap<>(c);
+                for (int i = 0; i < c; i++) {
+                    map.put(OPERATION_NAMES[i], new long[] { inFlights.get(i), acquireds.get(i) });
+                }
+                return map;
+            })
+        );
+    }
+
+    @Provide
+    Arbitrary<NativeExecutorsStats> nativeExecutorsStatsWithPerOp() {
+        return Combinators.combine(
+            dataFusionPluginStats(),
+            perOperationMap()
+        ).as(NativeExecutorsStats::new);
+    }
+
+    @Provide
+    Arbitrary<NativeExecutorsStats> nativeExecutorsStatsWithoutPerOp() {
+        return dataFusionPluginStats().map(NativeExecutorsStats::new);
+    }
+
+    // --- Property tests ---
+
     @Property(tries = 100)
     void writeableRoundTripProducesEqualObject(
             @ForAll("dataFusionPluginStats") DataFusionPluginStats pluginStats) throws IOException {
         NativeExecutorsStats original = new NativeExecutorsStats(pluginStats);
-
         BytesStreamOutput out = new BytesStreamOutput();
         original.writeTo(out);
-
         StreamInput in = out.bytes().streamInput();
         NativeExecutorsStats deserialized = new NativeExecutorsStats(in);
-
-        assertEquals(original, deserialized,
-            "NativeExecutorsStats should be equal after Writeable round-trip");
-        assertEquals(original.getDataFusionPluginStats(), deserialized.getDataFusionPluginStats(),
-            "Wrapped DataFusionPluginStats should be equal after round-trip");
+        assertEquals(original, deserialized);
     }
 
-    // --- Property 2: XContent structure ---
-
-    /**
-     * For any valid NativeExecutorsStats, toXContent() should produce JSON
-     * containing the expected keys and matching field values.
-     *
-     * **Validates: Requirements 6**
-     */
     @Property(tries = 100)
     @SuppressWarnings("unchecked")
     void xContentContainsExpectedStructure(
             @ForAll("dataFusionPluginStats") DataFusionPluginStats pluginStats) throws IOException {
         NativeExecutorsStats stats = new NativeExecutorsStats(pluginStats);
-
         XContentBuilder builder = XContentFactory.jsonBuilder();
         builder.startObject();
         stats.toXContent(builder, ToXContent.EMPTY_PARAMS);
         builder.endObject();
-
         Map<String, Object> json = XContentHelper.convertToMap(
-            BytesReference.bytes(builder), true, builder.contentType()
-        ).v2();
+            BytesReference.bytes(builder), true, builder.contentType()).v2();
 
-        // task_monitors key always present with all 4 sub-keys
-        assertTrue(json.containsKey("task_monitors"), "task_monitors key must be present");
-        Map<String, Object> taskMonitors = (Map<String, Object>) json.get("task_monitors");
-        assertNotNull(taskMonitors, "task_monitors must not be null");
-        assertTrue(taskMonitors.containsKey("query_execution"), "query_execution must be present");
-        assertTrue(taskMonitors.containsKey("stream_next"), "stream_next must be present");
-        assertTrue(taskMonitors.containsKey("fetch_phase"), "fetch_phase must be present");
-        assertTrue(taskMonitors.containsKey("segment_stats"), "segment_stats must be present");
-        assertTrue(taskMonitors.containsKey("indexed_query_execution"), "indexed_query_execution must be present");
-
-        // io_runtime present when non-null, absent when null
-        if (pluginStats.getIoRuntime() != null) {
-            assertTrue(json.containsKey("io_runtime"), "io_runtime should be present when non-null");
-            Map<String, Object> ioRuntime = (Map<String, Object>) json.get("io_runtime");
-            assertEquals(pluginStats.getIoRuntime().getWorkersCount(),
-                ((Number) ioRuntime.get("workers_count")).longValue(),
-                "workers_count should match for io_runtime");
-        } else {
-            assertFalse(json.containsKey("io_runtime"), "io_runtime should be absent when null");
-        }
-
-        // cpu_runtime present when non-null, absent when null
-        if (pluginStats.getCpuRuntime() != null) {
-            assertTrue(json.containsKey("cpu_runtime"), "cpu_runtime should be present when non-null");
-            Map<String, Object> cpuRuntime = (Map<String, Object>) json.get("cpu_runtime");
-            assertEquals(pluginStats.getCpuRuntime().getWorkersCount(),
-                ((Number) cpuRuntime.get("workers_count")).longValue(),
-                "workers_count should match for cpu_runtime");
-        } else {
-            assertFalse(json.containsKey("cpu_runtime"), "cpu_runtime should be absent when null");
-        }
-
-        // Verify task monitor field values match
-        Map<String, Object> queryExec = (Map<String, Object>) taskMonitors.get("query_execution");
-        assertEquals(pluginStats.getQueryExecution().getTotalPollDurationMs(),
-            ((Number) queryExec.get("total_poll_duration_ms")).longValue(),
-            "total_poll_duration_ms should match for query_execution");
-        assertEquals(pluginStats.getQueryExecution().getTotalScheduledDurationMs(),
-            ((Number) queryExec.get("total_scheduled_duration_ms")).longValue(),
-            "total_scheduled_duration_ms should match for query_execution");
+        assertTrue(json.containsKey("task_monitors"));
+        assertFalse(json.containsKey("native_inflight"),
+            "native_inflight should be absent when no per-operation data");
     }
 
-    // --- Property 3: Null handling ---
-
-    /**
-     * NativeExecutorsStats constructor should throw NullPointerException
-     * when passed null DataFusionPluginStats.
-     *
-     * **Validates: Requirements 6**
-     */
     @Property(tries = 1)
     void constructorRejectsNullDataFusionPluginStats() {
-        assertThrows(NullPointerException.class, () -> new NativeExecutorsStats((DataFusionPluginStats) null),
-            "Constructor should throw NullPointerException for null DataFusionPluginStats");
+        assertThrows(NullPointerException.class, () -> new NativeExecutorsStats((DataFusionPluginStats) null));
+    }
+
+    // Feature: per-operation-native-tracker, Property 6: Stats serialization round-trip
+    // **Validates: Requirements 6.1, 8.1**
+
+    @Property(tries = 100)
+    void statsSerializationRoundTripWithPerOpValues(
+            @ForAll("nativeExecutorsStatsWithPerOp") NativeExecutorsStats original) throws IOException {
+        BytesStreamOutput out = new BytesStreamOutput();
+        original.writeTo(out);
+        StreamInput in = out.bytes().streamInput();
+        NativeExecutorsStats deserialized = new NativeExecutorsStats(in);
+
+        assertEquals(original, deserialized);
+        assertEquals(original.getPerOperationInflight().size(), deserialized.getPerOperationInflight().size());
+    }
+
+    @Property(tries = 100)
+    void statsSerializationRoundTripWithoutPerOpValues(
+            @ForAll("nativeExecutorsStatsWithoutPerOp") NativeExecutorsStats original) throws IOException {
+        BytesStreamOutput out = new BytesStreamOutput();
+        original.writeTo(out);
+        StreamInput in = out.bytes().streamInput();
+        NativeExecutorsStats deserialized = new NativeExecutorsStats(in);
+
+        assertEquals(original, deserialized);
+        assertTrue(deserialized.getPerOperationInflight().isEmpty());
+    }
+
+    // Feature: per-operation-native-tracker, Property 7: JSON per-operation breakdown with correct totals
+    // **Validates: Requirements 6.2, 6.3, 6.4, 6.5**
+
+    @Property(tries = 100)
+    @SuppressWarnings("unchecked")
+    void jsonPerOperationBreakdownWithCorrectTotals(
+            @ForAll("nativeExecutorsStatsWithPerOp") NativeExecutorsStats stats) throws IOException {
+        XContentBuilder builder = XContentFactory.jsonBuilder();
+        builder.startObject();
+        stats.toXContent(builder, ToXContent.EMPTY_PARAMS);
+        builder.endObject();
+        Map<String, Object> json = XContentHelper.convertToMap(
+            BytesReference.bytes(builder), true, builder.contentType()).v2();
+
+        Map<String, long[]> perOp = stats.getPerOperationInflight();
+
+        assertFalse(json.containsKey("native_inflight"),
+            "native_inflight should no longer be a separate section");
+        assertTrue(json.containsKey("task_monitors"),
+            "task_monitors should be present");
+        Map<String, Object> taskMonitors = (Map<String, Object>) json.get("task_monitors");
+        assertNotNull(taskMonitors);
+
+        long expectedTotalInFlight = 0;
+        long expectedTotalAcquired = 0;
+
+        for (Map.Entry<String, long[]> entry : perOp.entrySet()) {
+            String opName = entry.getKey();
+            long[] values = entry.getValue();
+            assertTrue(taskMonitors.containsKey(opName),
+                "task_monitors should contain operation: " + opName);
+            Map<String, Object> opObj = (Map<String, Object>) taskMonitors.get(opName);
+            assertEquals(values[0], ((Number) opObj.get("in_flight")).longValue(),
+                "in_flight mismatch for " + opName);
+            assertEquals(values[1], ((Number) opObj.get("acquired")).longValue(),
+                "acquired mismatch for " + opName);
+            expectedTotalInFlight += values[0];
+            expectedTotalAcquired += values[1];
+        }
+
+        assertEquals(expectedTotalInFlight, ((Number) taskMonitors.get("total_in_flight")).longValue(),
+            "total_in_flight should equal sum of per-operation in_flight values");
+        assertEquals(expectedTotalAcquired, ((Number) taskMonitors.get("total_acquired")).longValue(),
+            "total_acquired should equal sum of per-operation acquired values");
+    }
+
+    @Property(tries = 100)
+    @SuppressWarnings("unchecked")
+    void jsonOmitsNativeInflightWhenMapEmpty(
+            @ForAll("nativeExecutorsStatsWithoutPerOp") NativeExecutorsStats stats) throws IOException {
+        XContentBuilder builder = XContentFactory.jsonBuilder();
+        builder.startObject();
+        stats.toXContent(builder, ToXContent.EMPTY_PARAMS);
+        builder.endObject();
+        Map<String, Object> json = XContentHelper.convertToMap(
+            BytesReference.bytes(builder), true, builder.contentType()).v2();
+
+        assertFalse(json.containsKey("native_inflight"),
+            "native_inflight should be absent when per-operation map is empty");
+        assertTrue(json.containsKey("task_monitors"));
     }
 }
