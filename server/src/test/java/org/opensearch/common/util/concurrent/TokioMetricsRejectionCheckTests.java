@@ -50,8 +50,15 @@ public class TokioMetricsRejectionCheckTests {
     }
 
     private static DataFusionPluginStats buildStats(DataFusionPluginStats.RuntimeValues cpuRuntime) {
+        return buildStatsWithIo(new DataFusionPluginStats.RuntimeValues(2, 0, 0, 0, 0, 0), cpuRuntime);
+    }
+
+    private static DataFusionPluginStats buildStatsWithIo(
+        DataFusionPluginStats.RuntimeValues ioRuntime,
+        DataFusionPluginStats.RuntimeValues cpuRuntime
+    ) {
         return new DataFusionPluginStats(
-            new DataFusionPluginStats.RuntimeValues(2, 0, 0, 0, 0, 0), // io runtime
+            ioRuntime,
             cpuRuntime,
             dummyTaskMonitor(),
             dummyTaskMonitor(),
@@ -144,5 +151,31 @@ public class TokioMetricsRejectionCheckTests {
         DataFusionPluginStats.RuntimeValues cpu = new DataFusionPluginStats.RuntimeValues(5, 0, 0, 0, 50, 0);
         NativeMetricsSnapshot.set(new NativeMetricsSnapshot(buildStats(cpu), System.currentTimeMillis()));
         assertTrue(check.shouldReject(), "depth == workers_count * 10 exactly must reject");
+    }
+
+    // --- IO Runtime Tests ---
+
+    @Test
+    void ioRuntimeAboveThreshold_shouldReject() {
+        // CPU is fine (depth=0), but IO is saturated (workers=4, depth=50, threshold=40)
+        DataFusionPluginStats.RuntimeValues cpu = new DataFusionPluginStats.RuntimeValues(4, 0, 0, 0, 0, 0);
+        DataFusionPluginStats.RuntimeValues io = new DataFusionPluginStats.RuntimeValues(4, 0, 0, 0, 50, 0);
+        NativeMetricsSnapshot.set(new NativeMetricsSnapshot(buildStatsWithIo(io, cpu), System.currentTimeMillis()));
+        assertTrue(check.shouldReject(), "IO runtime above threshold must reject even if CPU is fine");
+    }
+
+    @Test
+    void bothRuntimesBelowThreshold_shouldNotReject() {
+        DataFusionPluginStats.RuntimeValues cpu = new DataFusionPluginStats.RuntimeValues(4, 0, 0, 0, 10, 0);
+        DataFusionPluginStats.RuntimeValues io = new DataFusionPluginStats.RuntimeValues(4, 0, 0, 0, 10, 0);
+        NativeMetricsSnapshot.set(new NativeMetricsSnapshot(buildStatsWithIo(io, cpu), System.currentTimeMillis()));
+        assertFalse(check.shouldReject(), "Both runtimes below threshold must not reject");
+    }
+
+    @Test
+    void nullIoRuntime_cpuBelowThreshold_shouldNotReject() {
+        DataFusionPluginStats.RuntimeValues cpu = new DataFusionPluginStats.RuntimeValues(4, 0, 0, 0, 10, 0);
+        NativeMetricsSnapshot.set(new NativeMetricsSnapshot(buildStatsWithIo(null, cpu), System.currentTimeMillis()));
+        assertFalse(check.shouldReject(), "Null IO runtime with CPU below threshold must not reject");
     }
 }
