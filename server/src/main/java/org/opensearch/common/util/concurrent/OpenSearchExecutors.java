@@ -196,7 +196,7 @@ public class OpenSearchExecutors {
      * {@link NativeInflightRejectionCheck} rejects new tasks. Hardcoded
      * constant — will be tuned via load testing.
      */
-    private static final int MAX_NATIVE_IN_FLIGHT = 1000;
+    private static final int MAX_NATIVE_IN_FLIGHT = 2;
 
     /**
      * Creates a new resizable thread pool executor. When {@code nativeInflightAware} is {@code true},
