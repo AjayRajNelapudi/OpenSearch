@@ -22,9 +22,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * underflow from buggy double-release scenarios.
  * <p>
  * Rejection is handled at the queue level by
- * {@code NativeInflightAwareQueue},
- * which inflates the search pool queue's apparent size by the sum of all
- * trackers' {@link #getNativeInFlight()} values.
+ * {@code CompositeResizableBlockingQueue},
+ * which iterates a chain of rejection checks including the native in-flight
+ * check that sums all trackers' {@link #getNativeInFlight()} values.
  *
  * @opensearch.internal
  */

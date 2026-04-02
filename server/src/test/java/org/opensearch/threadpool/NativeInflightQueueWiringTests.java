@@ -18,7 +18,7 @@ import java.util.concurrent.BlockingQueue;
 
 /**
  * Unit tests verifying that the search thread pool is wired with a
- * {@code NativeInflightAwareQueue} and that the registry-sourced tracker injection works correctly.
+ * {@code CompositeResizableBlockingQueue} and that the registry-sourced tracker injection works correctly.
  */
 public class NativeInflightQueueWiringTests extends OpenSearchTestCase {
 
@@ -39,7 +39,7 @@ public class NativeInflightQueueWiringTests extends OpenSearchTestCase {
         try {
             OpenSearchThreadPoolExecutor searchExecutor = (OpenSearchThreadPoolExecutor) threadPool.executor(ThreadPool.Names.SEARCH);
             BlockingQueue<Runnable> queue = searchExecutor.getQueue();
-            assertEquals("NativeInflightAwareQueue", queue.getClass().getSimpleName());
+            assertEquals("CompositeResizableBlockingQueue", queue.getClass().getSimpleName());
 
             // Register a tracker via the registry — queue reads from registry automatically
             NativeExecutorTrackerRegistry.getOrCreate("test_op");
@@ -54,7 +54,7 @@ public class NativeInflightQueueWiringTests extends OpenSearchTestCase {
         try {
             OpenSearchThreadPoolExecutor searchExecutor = (OpenSearchThreadPoolExecutor) threadPool.executor(ThreadPool.Names.SEARCH);
             BlockingQueue<Runnable> queue = searchExecutor.getQueue();
-            assertEquals("NativeInflightAwareQueue", queue.getClass().getSimpleName());
+            assertEquals("CompositeResizableBlockingQueue", queue.getClass().getSimpleName());
 
             int accepted = 0;
             for (int i = 0; i < 5; i++) {

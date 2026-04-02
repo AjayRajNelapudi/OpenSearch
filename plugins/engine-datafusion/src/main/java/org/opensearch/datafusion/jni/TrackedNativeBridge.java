@@ -28,8 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code fetchSegmentStats}) use try/finally wrapping.
  * <p>
  * Rejection is not performed here — it happens at the queue level via
- * {@code NativeInflightAwareQueue}, which inflates the search pool queue's
- * apparent size by the sum of all trackers' in-flight counts.
+ * {@code CompositeResizableBlockingQueue}, which iterates a chain of rejection
+ * checks before delegating to {@code super.offer()}.
  *
  * @opensearch.internal
  */

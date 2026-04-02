@@ -13,6 +13,8 @@ import net.jqwik.api.Property;
 import net.jqwik.api.constraints.IntRange;
 import net.jqwik.api.constraints.Size;
 
+import org.opensearch.vectorized.execution.metrics.NativeExecutorTracker;
+
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;

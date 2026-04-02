@@ -44,10 +44,13 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
     /** Per-operation tracker snapshots: name → [inFlight, acquired]. */
     private final Map<String, long[]> perOperationInflight;
 
+    /** Cumulative count of rejections due to backpressure checks. */
+    private final long rejections;
+
     /**
-     * Construct stats with per-operation tracker values.
+     * Construct stats with per-operation tracker values and rejection counter.
      */
-    public NativeExecutorsStats(DataFusionPluginStats stats, List<NativeExecutorTracker> trackers) {
+    public NativeExecutorsStats(DataFusionPluginStats stats, List<NativeExecutorTracker> trackers, long rejections) {
         this.dataFusionPluginStats = Objects.requireNonNull(stats);
         if (trackers != null && !trackers.isEmpty()) {
             this.perOperationInflight = new LinkedHashMap<>(trackers.size());
@@ -57,22 +60,39 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
         } else {
             this.perOperationInflight = Collections.emptyMap();
         }
+        this.rejections = rejections;
     }
 
     /**
-     * Construct stats without tracker values.
+     * Construct stats with per-operation tracker values (zero rejections).
+     */
+    public NativeExecutorsStats(DataFusionPluginStats stats, List<NativeExecutorTracker> trackers) {
+        this(stats, trackers, 0);
+    }
+
+    /**
+     * Construct stats without tracker values (zero rejections).
      */
     public NativeExecutorsStats(DataFusionPluginStats stats) {
         this.dataFusionPluginStats = Objects.requireNonNull(stats);
         this.perOperationInflight = Collections.emptyMap();
+        this.rejections = 0;
     }
 
     /**
-     * Private constructor for deserialization and testing.
+     * Package-private constructor for deserialization and testing.
      */
-    NativeExecutorsStats(DataFusionPluginStats stats, Map<String, long[]> perOperationInflight) {
+    NativeExecutorsStats(DataFusionPluginStats stats, Map<String, long[]> perOperationInflight, long rejections) {
         this.dataFusionPluginStats = Objects.requireNonNull(stats);
         this.perOperationInflight = perOperationInflight != null ? perOperationInflight : Collections.emptyMap();
+        this.rejections = rejections;
+    }
+
+    /**
+     * Package-private constructor for deserialization and testing (zero rejections).
+     */
+    NativeExecutorsStats(DataFusionPluginStats stats, Map<String, long[]> perOperationInflight) {
+        this(stats, perOperationInflight, 0);
     }
 
     public NativeExecutorsStats(StreamInput in) throws IOException {
@@ -98,6 +118,7 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
         } else {
             perOperationInflight = Collections.emptyMap();
         }
+        this.rejections = in.readLong();
     }
 
     @Override
@@ -115,6 +136,7 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
             out.writeLong(entry.getValue()[0]); // inFlight
             out.writeLong(entry.getValue()[1]); // acquired
         }
+        out.writeLong(rejections);
     }
 
     @Override
@@ -131,8 +153,6 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
             cpuRuntime.toXContent(builder);
             builder.endObject();
         }
-        long totalInFlight = 0;
-        long totalAcquired = 0;
         builder.startObject("task_monitors");
 
         builder.startObject("query_execution");
@@ -160,14 +180,19 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
         appendInflight(builder, "indexed_query_execution");
         builder.endObject();
 
-        if (!perOperationInflight.isEmpty()) {
-            for (long[] vals : perOperationInflight.values()) {
-                totalInFlight += vals[0];
-                totalAcquired += vals[1];
-            }
-            builder.field("total_in_flight", totalInFlight);
-            builder.field("total_acquired", totalAcquired);
+        builder.endObject(); // end task_monitors
+
+        // Always render tasks section — defaults to zeros when no trackers registered yet
+        long totalInFlight = 0;
+        long totalAcquired = 0;
+        for (long[] vals : perOperationInflight.values()) {
+            totalInFlight += vals[0];
+            totalAcquired += vals[1];
         }
+        builder.startObject("tasks");
+        builder.field("total_in_flight", totalInFlight);
+        builder.field("total_acquired", totalAcquired);
+        builder.field("rejections", rejections);
         builder.endObject();
         return builder;
     }
@@ -189,12 +214,18 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
         return perOperationInflight;
     }
 
+    /** Returns the cumulative rejection count. */
+    public long getRejections() {
+        return rejections;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         NativeExecutorsStats that = (NativeExecutorsStats) o;
         if (!Objects.equals(dataFusionPluginStats, that.dataFusionPluginStats)) return false;
+        if (rejections != that.rejections) return false;
         if (perOperationInflight.size() != that.perOperationInflight.size()) return false;
         for (Map.Entry<String, long[]> entry : perOperationInflight.entrySet()) {
             long[] otherVal = that.perOperationInflight.get(entry.getKey());
@@ -206,6 +237,7 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
     @Override
     public int hashCode() {
         int result = Objects.hashCode(dataFusionPluginStats);
+        result = 31 * result + Long.hashCode(rejections);
         for (Map.Entry<String, long[]> entry : perOperationInflight.entrySet()) {
             result = 31 * result + entry.getKey().hashCode();
             result = 31 * result + Arrays.hashCode(entry.getValue());

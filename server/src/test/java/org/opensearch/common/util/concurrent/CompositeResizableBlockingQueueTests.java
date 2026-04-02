@@ -30,9 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Property-based and unit tests for {@link NativeInflightAwareQueue}.
+ * Property-based and unit tests for {@link CompositeResizableBlockingQueue}.
  */
-public class NativeInflightAwareQueueTests {
+public class CompositeResizableBlockingQueueTests {
 
     @BeforeEach
     @BeforeProperty
@@ -48,6 +48,7 @@ public class NativeInflightAwareQueueTests {
 
     // Feature: tracker-registry-migration, Property 5: Queue rejection with registry-sourced trackers
     // **Validates: Requirements 6.1, 6.3, 6.4, 11.2**
+    // Updated for CompositeResizableBlockingQueue: in-flight rejection is now via NativeInflightRejectionCheck
 
     @Property(tries = 100)
     void queueRejectionWithMultiTrackerInflation(
@@ -68,8 +69,10 @@ public class NativeInflightAwareQueueTests {
             totalInFlight += inFlight;
         }
 
-        NativeInflightAwareQueue<Runnable> queue = new NativeInflightAwareQueue<>(
-            new LinkedTransferQueue<>(), capacity
+        // Use NativeInflightRejectionCheck with maxNativeInFlight = capacity
+        // so that in-flight rejection triggers when totalInFlight >= capacity
+        CompositeResizableBlockingQueue<Runnable> queue = new CompositeResizableBlockingQueue<>(
+            new LinkedTransferQueue<>(), capacity, List.of(new NativeInflightRejectionCheck(capacity))
         );
 
         // Pre-fill the queue
@@ -83,13 +86,19 @@ public class NativeInflightAwareQueueTests {
             }
         }
 
-        int apparentSize = actualSize + totalInFlight;
         boolean result = queue.offer(() -> {});
 
-        if (apparentSize >= capacity) {
-            assertFalse(result, "offer() must return false when apparentSize (" + apparentSize + ") >= capacity (" + capacity + ")");
+        // Rejection happens if either:
+        // 1. NativeInflightRejectionCheck rejects (totalInFlight >= capacity), OR
+        // 2. super.offer() rejects (actualSize + 1 > capacity, i.e. actualSize >= capacity)
+        boolean inflightRejects = totalInFlight >= capacity;
+        boolean queueFull = actualSize >= capacity;
+
+        if (inflightRejects || queueFull) {
+            assertFalse(result, "offer() must return false when inflight rejects (" + inflightRejects
+                + ") or queue full (" + queueFull + ")");
         } else {
-            assertTrue(result, "offer() must return true when apparentSize (" + apparentSize + ") < capacity (" + capacity + ")");
+            assertTrue(result, "offer() must return true when inflight passes and queue has capacity");
         }
 
         // Clean up tracker state
@@ -109,8 +118,8 @@ public class NativeInflightAwareQueueTests {
         @ForAll @IntRange(min = 0, max = 60) int prefillCount
     ) {
         // Queue with empty registry (no trackers registered)
-        NativeInflightAwareQueue<Runnable> nativeQueue = new NativeInflightAwareQueue<>(
-            new LinkedTransferQueue<>(), capacity
+        CompositeResizableBlockingQueue<Runnable> nativeQueue = new CompositeResizableBlockingQueue<>(
+            new LinkedTransferQueue<>(), capacity, List.of()
         );
         ResizableBlockingQueue<Runnable> standardQueue = new ResizableBlockingQueue<>(
             new LinkedTransferQueue<>(), capacity
@@ -132,7 +141,7 @@ public class NativeInflightAwareQueueTests {
         boolean standardResult = standardQueue.offer(task);
 
         assertEquals(standardResult, nativeResult,
-            "With empty registry, NativeInflightAwareQueue.offer() must match ResizableBlockingQueue.offer()");
+            "With empty registry, CompositeResizableBlockingQueue.offer() must match ResizableBlockingQueue.offer()");
     }
 
     // Feature: tracker-registry-migration, Queue capacity invariant (registry-based trackers)
@@ -143,8 +152,8 @@ public class NativeInflightAwareQueueTests {
         @ForAll @Size(min = 1, max = 200) List<@IntRange(min = 0, max = 4) Integer> operations
     ) {
         NativeExecutorTracker tracker = NativeExecutorTrackerRegistry.getOrCreate("test_op");
-        NativeInflightAwareQueue<Runnable> queue = new NativeInflightAwareQueue<>(
-            new LinkedTransferQueue<>(), capacity
+        CompositeResizableBlockingQueue<Runnable> queue = new CompositeResizableBlockingQueue<>(
+            new LinkedTransferQueue<>(), capacity, List.of()
         );
 
         assertEquals(capacity, queue.capacity());
@@ -166,8 +175,8 @@ public class NativeInflightAwareQueueTests {
     void forcePutBypassesNativeAwareCapacityCheck() throws InterruptedException {
         int capacity = 5;
         NativeExecutorTracker tracker = NativeExecutorTrackerRegistry.getOrCreate("test_op");
-        NativeInflightAwareQueue<Runnable> queue = new NativeInflightAwareQueue<>(
-            new LinkedTransferQueue<>(), capacity
+        CompositeResizableBlockingQueue<Runnable> queue = new CompositeResizableBlockingQueue<>(
+            new LinkedTransferQueue<>(), capacity, List.of(new NativeInflightRejectionCheck(capacity))
         );
 
         for (int i = 0; i < capacity; i++) {
@@ -178,10 +187,10 @@ public class NativeInflightAwareQueueTests {
         }
 
         assertTrue(queue.size() + tracker.getNativeInFlight() >= capacity);
-        assertFalse(queue.offer(() -> {}), "offer() must fail when apparent size >= capacity");
+        assertFalse(queue.offer(() -> {}), "offer() must fail when native in-flight >= capacity");
 
         queue.forcePut(() -> {});
-        assertEquals(capacity + 1, queue.size(), "forcePut() must succeed even when apparent size >= capacity");
+        assertEquals(capacity + 1, queue.size(), "forcePut() must succeed even when native in-flight >= capacity");
 
         for (int i = 0; i < 10; i++) {
             tracker.release();

@@ -114,6 +114,8 @@ public class NodeService implements Closeable {
     private final CacheService cacheService;
     @Nullable
     private final ServiceCache<DataFusionPluginStats> dataFusionService;
+    @Nullable
+    private final NativeMetricsCollectorService nativeMetricsCollectorService;
 
     NodeService(
         Settings settings,
@@ -142,7 +144,8 @@ public class NodeService implements Closeable {
         RepositoriesService repositoriesService,
         AdmissionControlService admissionControlService,
         CacheService cacheService,
-        @Nullable ServiceCache<DataFusionPluginStats> dataFusionService
+        @Nullable ServiceCache<DataFusionPluginStats> dataFusionService,
+        @Nullable NativeMetricsCollectorService nativeMetricsCollectorService
     ) {
         this.settings = settings;
         this.threadPool = threadPool;
@@ -173,6 +176,7 @@ public class NodeService implements Closeable {
         this.segmentReplicationStatsTracker = segmentReplicationStatsTracker;
         this.cacheService = cacheService;
         this.dataFusionService = dataFusionService;
+        this.nativeMetricsCollectorService = nativeMetricsCollectorService;
     }
 
     public NodeInfo info(
@@ -265,9 +269,10 @@ public class NodeService implements Closeable {
         DataFusionPluginStats dataFusionPluginStats = (nativeExecutors && dataFusionService != null) ? dataFusionService.getOrRefresh() : null;
         NativeExecutorsStats nativeExecutorsStats;
         if (dataFusionPluginStats != null) {
+            long rejections = nativeMetricsCollectorService != null ? nativeMetricsCollectorService.getRejectionCount() : 0;
             Collection<NativeExecutorTracker> trackers = NativeExecutorTrackerRegistry.getAll();
             if (!trackers.isEmpty()) {
-                nativeExecutorsStats = new NativeExecutorsStats(dataFusionPluginStats, new ArrayList<>(trackers));
+                nativeExecutorsStats = new NativeExecutorsStats(dataFusionPluginStats, new ArrayList<>(trackers), rejections);
             } else {
                 nativeExecutorsStats = new NativeExecutorsStats(dataFusionPluginStats);
             }
@@ -323,6 +328,11 @@ public class NodeService implements Closeable {
 
     public TaskCancellationMonitoringService getTaskCancellationMonitoringService() {
         return taskCancellationMonitoringService;
+    }
+
+    @Nullable
+    public NativeMetricsCollectorService getNativeMetricsCollectorService() {
+        return nativeMetricsCollectorService;
     }
 
     @Override

@@ -192,9 +192,17 @@ public class OpenSearchExecutors {
     }
 
     /**
+     * Maximum number of concurrent native in-flight operations before the
+     * {@link NativeInflightRejectionCheck} rejects new tasks. Hardcoded
+     * constant — will be tuned via load testing.
+     */
+    private static final int MAX_NATIVE_IN_FLIGHT = 1000;
+
+    /**
      * Creates a new resizable thread pool executor. When {@code nativeInflightAware} is {@code true},
-     * the queue is a {@link NativeInflightAwareQueue} that reads trackers from the
-     * {@code NativeExecutorTrackerRegistry} at offer time.
+     * the queue is a {@link CompositeResizableBlockingQueue} that iterates a chain of
+     * {@link QueueRejectionCheck} pre-checks (Tokio metrics first, then native in-flight)
+     * before delegating to {@code super.offer()}.
      * When {@code false}, a standard {@link ResizableBlockingQueue} is used.
      */
     public static OpenSearchThreadPoolExecutor newResizable(
@@ -223,7 +231,11 @@ public class OpenSearchExecutors {
 
         ResizableBlockingQueue<Runnable> queue;
         if (nativeInflightAware) {
-            queue = new NativeInflightAwareQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity);
+            List<QueueRejectionCheck> checks = List.of(
+                new TokioMetricsRejectionCheck(),
+                new NativeInflightRejectionCheck(MAX_NATIVE_IN_FLIGHT)
+            );
+            queue = new CompositeResizableBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity, checks);
         } else {
             queue = new ResizableBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity);
         }

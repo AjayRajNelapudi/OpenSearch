@@ -16,6 +16,7 @@ import net.jqwik.api.Arbitraries;
 import net.jqwik.api.constraints.Size;
 
 import org.junit.jupiter.api.Test;
+import org.opensearch.vectorized.execution.metrics.NativeExecutorTracker;
 
 import java.util.List;
 
