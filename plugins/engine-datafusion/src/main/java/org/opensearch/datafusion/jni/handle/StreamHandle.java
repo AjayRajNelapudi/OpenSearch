@@ -20,7 +20,7 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.datafusion.ErrorUtil;
 import org.opensearch.datafusion.jni.NativeBridge;
-import org.opensearch.datafusion.jni.TrackedNativeBridge;
+
 import org.opensearch.vectorized.execution.jni.NativeHandle;
 
 import java.util.concurrent.CompletableFuture;
@@ -103,7 +103,7 @@ public final class StreamHandle extends NativeHandle {
                 result.completeExceptionally(e);
             }
         };
-        TrackedNativeBridge.streamNextWithTracking(runtimePointer, ptr, listener);
+        NativeBridge.streamNext(runtimePointer, ptr, listener);
         return result;
     }
 

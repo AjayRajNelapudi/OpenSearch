@@ -17,7 +17,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Weight;
 import org.opensearch.core.action.ActionListener;
-import org.opensearch.datafusion.jni.TrackedNativeBridge;
+import org.opensearch.datafusion.jni.NativeBridge;
 import org.opensearch.index.engine.exec.WriterFileSet;
 
 import java.io.IOException;
@@ -35,7 +35,7 @@ import java.util.List;
  * 2. Creates a Lucene Weight from the query
  * 3. Registers it with LuceneIndexSearcher for JNI callbacks
  * 4. Gathers segment metadata (maxDoc per segment, parquet paths)
- * 5. Calls TrackedNativeBridge.executeIndexedQueryWithTracking() to run the indexed query
+ * 5. Calls NativeBridge.executeIndexedQueryAsync() to run the indexed query
  * 6. Returns a stream pointer consumable via streamNext/streamGetSchema
  */
 public class IndexedQueryBridge {
@@ -134,7 +134,7 @@ public class IndexedQueryBridge {
                 leaves.size(), numPartitions, bitsetMode, weightPtr, tableName,
                 substraitBytes != null ? substraitBytes.length + " bytes" : "null");
 
-            TrackedNativeBridge.executeIndexedQueryWithTracking(
+            NativeBridge.executeIndexedQueryAsync(
                 weightPtr,
                 segmentMaxDocs,
                 parquetPaths,

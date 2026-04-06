@@ -72,13 +72,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.opensearch.action.admin.cluster.node.stats.NativeExecutorsStats;
 import org.opensearch.common.cache.ServiceCache;
-import org.opensearch.vectorized.execution.metrics.NativeExecutorTracker;
-import org.opensearch.vectorized.execution.metrics.NativeExecutorTrackerRegistry;
 import org.opensearch.vectorized.execution.metrics.DataFusionPluginStats;
-
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
 
 /**
  * Services exposed to nodes
@@ -266,18 +260,9 @@ public class NodeService implements Closeable {
     ) {
         // for indices stats we want to include previous allocated shards stats as well (it will
         // only be applied to the sensible ones to use, like refresh/merge/flush/indexing stats)
-        DataFusionPluginStats dataFusionPluginStats = (nativeExecutors && dataFusionService != null) ? dataFusionService.getOrRefresh() : null;
-        NativeExecutorsStats nativeExecutorsStats;
-        if (dataFusionPluginStats != null) {
-            Collection<NativeExecutorTracker> trackers = NativeExecutorTrackerRegistry.getAll();
-            if (!trackers.isEmpty()) {
-                nativeExecutorsStats = new NativeExecutorsStats(dataFusionPluginStats, new ArrayList<>(trackers));
-            } else {
-                nativeExecutorsStats = new NativeExecutorsStats(dataFusionPluginStats);
-            }
-        } else {
-            nativeExecutorsStats = null;
-        }
+        NativeExecutorsStats nativeExecutorsStats = (nativeExecutors && dataFusionService != null)
+            ? new NativeExecutorsStats(dataFusionService.getOrRefresh())
+            : null;
         return new NodeStats(
             transportService.getLocalNode(),
             System.currentTimeMillis(),

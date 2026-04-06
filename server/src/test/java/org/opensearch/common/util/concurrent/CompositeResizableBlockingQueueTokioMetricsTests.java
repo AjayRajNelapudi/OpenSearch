@@ -8,7 +8,6 @@
 
 package org.opensearch.common.util.concurrent;
 
-import org.opensearch.vectorized.execution.metrics.NativeExecutorTrackerRegistry;
 import org.opensearch.vectorized.execution.metrics.NativeMetricsSnapshot;
 
 import net.jqwik.api.Arbitraries;
@@ -42,14 +41,12 @@ public class CompositeResizableBlockingQueueTokioMetricsTests {
     @BeforeProperty
     void setUp() {
         NativeMetricsSnapshot.set(null);
-        NativeExecutorTrackerRegistry.clear();
     }
 
     @AfterEach
     @AfterProperty
     void tearDown() {
         NativeMetricsSnapshot.set(null);
-        NativeExecutorTrackerRegistry.clear();
     }
 
     // --- Test helpers ---

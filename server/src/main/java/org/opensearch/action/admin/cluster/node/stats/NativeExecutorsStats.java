@@ -8,7 +8,6 @@
 
 package org.opensearch.action.admin.cluster.node.stats;
 
-import org.opensearch.vectorized.execution.metrics.NativeExecutorTracker;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
@@ -19,11 +18,6 @@ import org.opensearch.vectorized.execution.metrics.DataFusionPluginStats.Runtime
 import org.opensearch.vectorized.execution.metrics.DataFusionPluginStats.TaskMonitorValues;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -32,47 +26,17 @@ import java.util.Objects;
  * and JSON rendering for the {@code native_executors} section of the
  * nodes-stats API response.
  *
- * Carries per-operation native in-flight counters when the DataFusion
- * plugin is installed and trackers are available.
- *
  * @opensearch.internal
  */
 public class NativeExecutorsStats implements Writeable, ToXContentFragment {
 
     private final DataFusionPluginStats dataFusionPluginStats;
 
-    /** Per-operation tracker snapshots: name → [inFlight, acquired]. */
-    private final Map<String, long[]> perOperationInflight;
-
     /**
-     * Construct stats with per-operation tracker values.
-     */
-    public NativeExecutorsStats(DataFusionPluginStats stats, List<NativeExecutorTracker> trackers) {
-        this.dataFusionPluginStats = Objects.requireNonNull(stats);
-        if (trackers != null && !trackers.isEmpty()) {
-            this.perOperationInflight = new LinkedHashMap<>(trackers.size());
-            for (NativeExecutorTracker t : trackers) {
-                perOperationInflight.put(t.getName(), new long[] { t.getNativeInFlight(), t.getNativeAcquired() });
-            }
-        } else {
-            this.perOperationInflight = Collections.emptyMap();
-        }
-    }
-
-    /**
-     * Construct stats without tracker values.
+     * Construct stats from plugin stats.
      */
     public NativeExecutorsStats(DataFusionPluginStats stats) {
         this.dataFusionPluginStats = Objects.requireNonNull(stats);
-        this.perOperationInflight = Collections.emptyMap();
-    }
-
-    /**
-     * Package-private constructor for deserialization and testing.
-     */
-    NativeExecutorsStats(DataFusionPluginStats stats, Map<String, long[]> perOperationInflight) {
-        this.dataFusionPluginStats = Objects.requireNonNull(stats);
-        this.perOperationInflight = perOperationInflight != null ? perOperationInflight : Collections.emptyMap();
     }
 
     public NativeExecutorsStats(StreamInput in) throws IOException {
@@ -86,18 +50,6 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
         this.dataFusionPluginStats = new DataFusionPluginStats(
             ioRuntime, cpuRuntime, queryExecution, streamNext, fetchPhase, segmentStats, indexedQueryExecution
         );
-        int count = in.readVInt();
-        if (count > 0) {
-            perOperationInflight = new LinkedHashMap<>(count);
-            for (int i = 0; i < count; i++) {
-                String name = in.readString();
-                long inFlight = in.readLong();
-                long acquired = in.readLong();
-                perOperationInflight.put(name, new long[] { inFlight, acquired });
-            }
-        } else {
-            perOperationInflight = Collections.emptyMap();
-        }
     }
 
     @Override
@@ -109,12 +61,6 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
         dataFusionPluginStats.getFetchPhase().writeTo(out);
         dataFusionPluginStats.getSegmentStats().writeTo(out);
         dataFusionPluginStats.getIndexedQueryExecution().writeTo(out);
-        out.writeVInt(perOperationInflight.size());
-        for (Map.Entry<String, long[]> entry : perOperationInflight.entrySet()) {
-            out.writeString(entry.getKey());
-            out.writeLong(entry.getValue()[0]); // inFlight
-            out.writeLong(entry.getValue()[1]); // acquired
-        }
     }
 
     @Override
@@ -135,48 +81,30 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
 
         builder.startObject("query_execution");
         dataFusionPluginStats.getQueryExecution().toXContent(builder);
-        appendInflight(builder, "query_execution");
         builder.endObject();
 
         builder.startObject("stream_next");
         dataFusionPluginStats.getStreamNext().toXContent(builder);
-        appendInflight(builder, "stream_next");
         builder.endObject();
 
         builder.startObject("fetch_phase");
         dataFusionPluginStats.getFetchPhase().toXContent(builder);
-        appendInflight(builder, "fetch_phase");
         builder.endObject();
 
         builder.startObject("segment_stats");
         dataFusionPluginStats.getSegmentStats().toXContent(builder);
-        appendInflight(builder, "segment_stats");
         builder.endObject();
 
         builder.startObject("indexed_query_execution");
         dataFusionPluginStats.getIndexedQueryExecution().toXContent(builder);
-        appendInflight(builder, "indexed_query_execution");
         builder.endObject();
 
         builder.endObject(); // end task_monitors
         return builder;
     }
 
-    private void appendInflight(XContentBuilder builder, String operationName) throws IOException {
-        long[] vals = perOperationInflight.get(operationName);
-        if (vals != null) {
-            builder.field("in_flight", vals[0]);
-            builder.field("acquired", vals[1]);
-        }
-    }
-
     public DataFusionPluginStats getDataFusionPluginStats() {
         return dataFusionPluginStats;
-    }
-
-    /** Returns per-operation in-flight snapshot: name → [inFlight, acquired]. */
-    public Map<String, long[]> getPerOperationInflight() {
-        return perOperationInflight;
     }
 
     @Override
@@ -184,22 +112,11 @@ public class NativeExecutorsStats implements Writeable, ToXContentFragment {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         NativeExecutorsStats that = (NativeExecutorsStats) o;
-        if (!Objects.equals(dataFusionPluginStats, that.dataFusionPluginStats)) return false;
-        if (perOperationInflight.size() != that.perOperationInflight.size()) return false;
-        for (Map.Entry<String, long[]> entry : perOperationInflight.entrySet()) {
-            long[] otherVal = that.perOperationInflight.get(entry.getKey());
-            if (otherVal == null || !Arrays.equals(entry.getValue(), otherVal)) return false;
-        }
-        return true;
+        return Objects.equals(dataFusionPluginStats, that.dataFusionPluginStats);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hashCode(dataFusionPluginStats);
-        for (Map.Entry<String, long[]> entry : perOperationInflight.entrySet()) {
-            result = 31 * result + entry.getKey().hashCode();
-            result = 31 * result + Arrays.hashCode(entry.getValue());
-        }
-        return result;
+        return Objects.hashCode(dataFusionPluginStats);
     }
 }

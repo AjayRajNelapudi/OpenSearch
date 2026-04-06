@@ -30,7 +30,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.backend.EngineBridge;
 import org.opensearch.core.action.ActionListener;
-import org.opensearch.datafusion.jni.TrackedNativeBridge;
+import org.opensearch.datafusion.jni.NativeBridge;
 import org.opensearch.datafusion.search.DatafusionContext;
 import org.opensearch.datafusion.search.DatafusionReader;
 
@@ -197,7 +197,7 @@ public class DataFusionBridge implements EngineBridge<byte[], DataFusionResultSt
     @Override
     public DataFusionResultStream execute(byte[] fragment) {
         CompletableFuture<Long> future = new CompletableFuture<>();
-        TrackedNativeBridge.executeQueryPhaseWithTracking(
+        NativeBridge.executeQueryPhaseAsync(
             reader.getReaderPtr(),
             "",       // tableName — resolved by the native engine from the plan
             fragment,

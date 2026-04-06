@@ -14,7 +14,6 @@ import org.opensearch.action.LatchedActionListener;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.datafusion.jni.NativeBridge;
-import org.opensearch.datafusion.jni.TrackedNativeBridge;
 import org.opensearch.datafusion.jni.handle.ReaderHandle;
 import org.opensearch.index.engine.exec.FileStats;
 import org.opensearch.index.engine.exec.WriterFileSet;
@@ -133,7 +132,7 @@ public class DatafusionReader implements Closeable {
                 segmentStats = Map.of();
             }
         };
-        TrackedNativeBridge.fetchSegmentStatsWithTracking(getReaderPtr(), new LatchedActionListener<>(listener, statsLatch));
+        NativeBridge.fetchSegmentStats(getReaderPtr(), new LatchedActionListener<>(listener, statsLatch));
         try {
             if (statsLatch.await(FETCH_TIMEOUT.getMillis(), TimeUnit.MILLISECONDS) == false) {
                 logger.warn("Failed to fetch segment stats from datafusion reader within {} timeout", FETCH_TIMEOUT);
