@@ -188,25 +188,6 @@ public class OpenSearchExecutors {
         ThreadContext contextHolder,
         AtomicReference<RunnableTaskExecutionListener> runnableTaskListener
     ) {
-        return newResizable(name, size, queueCapacity, threadFactory, contextHolder, runnableTaskListener, false);
-    }
-
-    /**
-     * Creates a new resizable thread pool executor. When {@code nativeInflightAware} is {@code true},
-     * the queue is a {@link CompositeResizableBlockingQueue} that iterates a chain of
-     * {@link QueueRejectionCheck} pre-checks (Tokio metrics saturation check)
-     * before delegating to {@code super.offer()}.
-     * When {@code false}, a standard {@link ResizableBlockingQueue} is used.
-     */
-    public static OpenSearchThreadPoolExecutor newResizable(
-        String name,
-        int size,
-        int queueCapacity,
-        ThreadFactory threadFactory,
-        ThreadContext contextHolder,
-        AtomicReference<RunnableTaskExecutionListener> runnableTaskListener,
-        boolean nativeInflightAware
-    ) {
 
         if (queueCapacity <= 0) {
             throw new IllegalArgumentException("queue capacity for [" + name + "] executor must be positive, got: " + queueCapacity);
@@ -222,19 +203,10 @@ public class OpenSearchExecutors {
             runnableWrapper = TimedRunnable::new;
         }
 
-        ResizableBlockingQueue<Runnable> queue;
-        if (nativeInflightAware) {
-            List<QueueRejectionCheck> checks = List.of(
-                new TokioMetricsRejectionCheck()
-            );
-            queue = new CompositeResizableBlockingQueue<>(
-                ConcurrentCollections.<Runnable>newBlockingQueue(),
-                queueCapacity,
-                checks
-            );
-        } else {
-            queue = new ResizableBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity);
-        }
+        ResizableBlockingQueue<Runnable> queue = new ResizableBlockingQueue<>(
+            ConcurrentCollections.<Runnable>newBlockingQueue(),
+            queueCapacity
+        );
 
         return new QueueResizableOpenSearchThreadPoolExecutor(
             name,

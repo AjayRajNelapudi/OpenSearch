@@ -1548,13 +1548,6 @@ public class Node implements Closeable {
                 dataFusionService = new ServiceCache<>(dataFusionMetricProvider::stats, TimeValue.timeValueSeconds(1));
             }
 
-            // Create NativeMetricsCollectorService for periodic Tokio metrics collection
-            final NativeMetricsCollectorService nativeMetricsCollectorService = new NativeMetricsCollectorService(threadPool);
-            if (dataFusionMetricProvider != null) {
-                nativeMetricsCollectorService.registerMetricProvider(dataFusionMetricProvider);
-            }
-            resourcesToClose.add(nativeMetricsCollectorService);
-
             this.nodeService = new NodeService(
                 settings,
                 threadPool,
@@ -1582,8 +1575,7 @@ public class Node implements Closeable {
                 repositoryService,
                 admissionControlService,
                 cacheService,
-                dataFusionService,
-                nativeMetricsCollectorService
+                dataFusionService
             );
 
             if (FeatureFlags.isEnabled(ARROW_STREAMS_SETTING)) {
@@ -1906,9 +1898,6 @@ public class Node implements Closeable {
         injector.getInstance(FsHealthService.class).start();
         injector.getInstance(NodeResourceUsageTracker.class).start();
         injector.getInstance(ResourceUsageCollectorService.class).start();
-        if (nodeService.getNativeMetricsCollectorService() != null) {
-            nodeService.getNativeMetricsCollectorService().start();
-        }
         nodeService.getMonitorService().start();
         nodeService.getSearchBackpressureService().start();
         nodeService.getTaskCancellationMonitoringService().start();

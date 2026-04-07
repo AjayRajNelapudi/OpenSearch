@@ -32,7 +32,6 @@ public final class ResizableExecutorBuilder extends ExecutorBuilder<ResizableExe
     private final Setting<Integer> sizeSetting;
     private final Setting<Integer> queueSizeSetting;
     private final AtomicReference<RunnableTaskExecutionListener> runnableTaskListener;
-    private final boolean nativeInflightAware;
 
     ResizableExecutorBuilder(
         final Settings settings,
@@ -41,18 +40,7 @@ public final class ResizableExecutorBuilder extends ExecutorBuilder<ResizableExe
         final int queueSize,
         final AtomicReference<RunnableTaskExecutionListener> runnableTaskListener
     ) {
-        this(settings, name, size, queueSize, "thread_pool." + name, runnableTaskListener, false);
-    }
-
-    ResizableExecutorBuilder(
-        final Settings settings,
-        final String name,
-        final int size,
-        final int queueSize,
-        final AtomicReference<RunnableTaskExecutionListener> runnableTaskListener,
-        final boolean nativeInflightAware
-    ) {
-        this(settings, name, size, queueSize, "thread_pool." + name, runnableTaskListener, nativeInflightAware);
+        this(settings, name, size, queueSize, "thread_pool." + name, runnableTaskListener);
     }
 
     public ResizableExecutorBuilder(
@@ -62,18 +50,6 @@ public final class ResizableExecutorBuilder extends ExecutorBuilder<ResizableExe
         final int queueSize,
         final String prefix,
         final AtomicReference<RunnableTaskExecutionListener> runnableTaskListener
-    ) {
-        this(settings, name, size, queueSize, prefix, runnableTaskListener, false);
-    }
-
-    public ResizableExecutorBuilder(
-        final Settings settings,
-        final String name,
-        final int size,
-        final int queueSize,
-        final String prefix,
-        final AtomicReference<RunnableTaskExecutionListener> runnableTaskListener,
-        final boolean nativeInflightAware
     ) {
         super(name);
         final String sizeKey = settingsKey(prefix, "size");
@@ -90,7 +66,6 @@ public final class ResizableExecutorBuilder extends ExecutorBuilder<ResizableExe
             new Setting.Property[] { Setting.Property.NodeScope, Setting.Property.Dynamic }
         );
         this.runnableTaskListener = runnableTaskListener;
-        this.nativeInflightAware = nativeInflightAware;
     }
 
     @Override
@@ -119,8 +94,7 @@ public final class ResizableExecutorBuilder extends ExecutorBuilder<ResizableExe
             queueSize,
             threadFactory,
             threadContext,
-            runnableTaskListener,
-            nativeInflightAware
+            runnableTaskListener
         );
         final ThreadPool.Info info = new ThreadPool.Info(
             name(),
