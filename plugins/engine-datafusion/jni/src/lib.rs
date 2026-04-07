@@ -130,11 +130,12 @@ static CPU_QUEUE_DEPTH_HISTOGRAM: OnceLazy<QueueDepthHistogram> = OnceLazy::new(
 
 /// Threshold multiplier for new query dispatches (executeQueryPhaseAsync, executeIndexedQueryAsync).
 /// Saturation is detected when global_queue_depth >= workers_count * MULTIPLIER.
-const MULTIPLIER: u64 = 10;
+/// Set high (100) for load testing — effectively disables rejection to observe natural saturation.
+const MULTIPLIER: u64 = 100;
 
 /// Threshold multiplier for continuation operations (streamNext, fetchSegmentStats).
-/// Set higher than MULTIPLIER (3x) to allow in-flight work to complete under moderate saturation.
-const CONTINUATION_MULTIPLIER: u64 = 30;
+/// Set high (100) for load testing — effectively disables rejection to observe natural saturation.
+const CONTINUATION_MULTIPLIER: u64 = 100;
 
 // Global runtime manager
 static TOKIO_RUNTIME_MANAGER: OnceLock<Arc<RuntimeManager>> = OnceLock::new();
