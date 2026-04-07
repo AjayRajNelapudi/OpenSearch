@@ -68,13 +68,22 @@ public class DataFusionPluginStats implements PluginStats {
     }
 
     /**
-     * Decodes a flat {@code long[]} array (from JNI) into a DataFusionPluginStats instance.
-     * The array must contain exactly 27 elements laid out as:
-     * [0..5] io_runtime, [6..11] cpu_runtime, [12..14] query_execution,
-     * [15..17] stream_next, [18..20] fetch_phase, [21..23] segment_stats,
-     * [24..26] indexed_query_execution.
+     * Decodes a flat {@code long[32]} array (from JNI) into a DataFusionPluginStats instance.
+     * The array must contain exactly 32 elements laid out as:
+     * <pre>
+     * [0..5]   io_runtime   (workers_count, total_polls_count, total_busy_duration_ms,
+     *                         total_overflow_count, global_queue_depth, blocking_queue_depth)
+     * [6..11]  cpu_runtime  (same 6 fields)
+     * [12..15] query_execution          (total_poll_duration_ms, total_scheduled_duration_ms,
+     *                                     total_idle_duration_ms, rejected)
+     * [16..19] stream_next              (same 4 fields)
+     * [20..23] fetch_phase              (same 4 fields)
+     * [24..27] segment_stats            (same 4 fields)
+     * [28..31] indexed_query_execution  (same 4 fields)
+     * </pre>
+     * The rejected field appears at indices 15, 19, 23, 27, and 31 for each task monitor.
      *
-     * @param data flat long array of 27 elements
+     * @param data flat long array of 32 elements
      * @return a new DataFusionPluginStats instance
      * @throws IllegalArgumentException if the array is null or not fully consumed
      */
@@ -157,7 +166,11 @@ public class DataFusionPluginStats implements PluginStats {
         public static final int TOTAL_OVERFLOW_COUNT = 3;
         public static final int GLOBAL_QUEUE_DEPTH = 4;
         public static final int BLOCKING_QUEUE_DEPTH = 5;
-        public static final int SIZE = 6;
+        public static final int MAX_GLOBAL_QUEUE_DEPTH = 6;
+        public static final int P50_GLOBAL_QUEUE_DEPTH = 7;
+        public static final int P90_GLOBAL_QUEUE_DEPTH = 8;
+        public static final int P99_GLOBAL_QUEUE_DEPTH = 9;
+        public static final int SIZE = 10;
 
         /**
          * Creates a RuntimeValues view over a slice of the given array.
@@ -179,10 +192,14 @@ public class DataFusionPluginStats implements PluginStats {
             long totalBusyDurationMs,
             long totalOverflowCount,
             long globalQueueDepth,
-            long blockingQueueDepth
+            long blockingQueueDepth,
+            long maxGlobalQueueDepth,
+            long p50GlobalQueueDepth,
+            long p90GlobalQueueDepth,
+            long p99GlobalQueueDepth
         ) {
             super(
-                new long[] { workersCount, totalPollsCount, totalBusyDurationMs, totalOverflowCount, globalQueueDepth, blockingQueueDepth },
+                new long[] { workersCount, totalPollsCount, totalBusyDurationMs, totalOverflowCount, globalQueueDepth, blockingQueueDepth, maxGlobalQueueDepth, p50GlobalQueueDepth, p90GlobalQueueDepth, p99GlobalQueueDepth },
                 0,
                 SIZE
             );
@@ -193,7 +210,7 @@ public class DataFusionPluginStats implements PluginStats {
          */
         public RuntimeValues(StreamInput in) throws IOException {
             super(
-                new long[] { in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong() },
+                new long[] { in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong() },
                 0,
                 SIZE
             );
@@ -212,6 +229,10 @@ public class DataFusionPluginStats implements PluginStats {
             out.writeVLong(get(TOTAL_OVERFLOW_COUNT));
             out.writeVLong(get(GLOBAL_QUEUE_DEPTH));
             out.writeVLong(get(BLOCKING_QUEUE_DEPTH));
+            out.writeVLong(get(MAX_GLOBAL_QUEUE_DEPTH));
+            out.writeVLong(get(P50_GLOBAL_QUEUE_DEPTH));
+            out.writeVLong(get(P90_GLOBAL_QUEUE_DEPTH));
+            out.writeVLong(get(P99_GLOBAL_QUEUE_DEPTH));
         }
 
         public void toXContent(XContentBuilder builder) throws IOException {
@@ -221,6 +242,10 @@ public class DataFusionPluginStats implements PluginStats {
             builder.field("total_overflow_count", get(TOTAL_OVERFLOW_COUNT));
             builder.field("global_queue_depth", get(GLOBAL_QUEUE_DEPTH));
             builder.field("blocking_queue_depth", get(BLOCKING_QUEUE_DEPTH));
+            builder.field("max_global_queue_depth", get(MAX_GLOBAL_QUEUE_DEPTH));
+            builder.field("p50_global_queue_depth", get(P50_GLOBAL_QUEUE_DEPTH));
+            builder.field("p90_global_queue_depth", get(P90_GLOBAL_QUEUE_DEPTH));
+            builder.field("p99_global_queue_depth", get(P99_GLOBAL_QUEUE_DEPTH));
         }
 
         public long getWorkersCount() { return get(WORKERS_COUNT); }
@@ -229,6 +254,10 @@ public class DataFusionPluginStats implements PluginStats {
         public long getTotalOverflowCount() { return get(TOTAL_OVERFLOW_COUNT); }
         public long getGlobalQueueDepth() { return get(GLOBAL_QUEUE_DEPTH); }
         public long getBlockingQueueDepth() { return get(BLOCKING_QUEUE_DEPTH); }
+        public long getMaxGlobalQueueDepth() { return get(MAX_GLOBAL_QUEUE_DEPTH); }
+        public long getP50GlobalQueueDepth() { return get(P50_GLOBAL_QUEUE_DEPTH); }
+        public long getP90GlobalQueueDepth() { return get(P90_GLOBAL_QUEUE_DEPTH); }
+        public long getP99GlobalQueueDepth() { return get(P99_GLOBAL_QUEUE_DEPTH); }
 
         @Override
         public boolean equals(Object o) {
@@ -240,20 +269,27 @@ public class DataFusionPluginStats implements PluginStats {
                 && get(TOTAL_BUSY_DURATION_MS) == that.get(TOTAL_BUSY_DURATION_MS)
                 && get(TOTAL_OVERFLOW_COUNT) == that.get(TOTAL_OVERFLOW_COUNT)
                 && get(GLOBAL_QUEUE_DEPTH) == that.get(GLOBAL_QUEUE_DEPTH)
-                && get(BLOCKING_QUEUE_DEPTH) == that.get(BLOCKING_QUEUE_DEPTH);
+                && get(BLOCKING_QUEUE_DEPTH) == that.get(BLOCKING_QUEUE_DEPTH)
+                && get(MAX_GLOBAL_QUEUE_DEPTH) == that.get(MAX_GLOBAL_QUEUE_DEPTH)
+                && get(P50_GLOBAL_QUEUE_DEPTH) == that.get(P50_GLOBAL_QUEUE_DEPTH)
+                && get(P90_GLOBAL_QUEUE_DEPTH) == that.get(P90_GLOBAL_QUEUE_DEPTH)
+                && get(P99_GLOBAL_QUEUE_DEPTH) == that.get(P99_GLOBAL_QUEUE_DEPTH);
         }
 
         @Override
         public int hashCode() {
             return Objects.hash(
                 get(WORKERS_COUNT), get(TOTAL_POLLS_COUNT), get(TOTAL_BUSY_DURATION_MS),
-                get(TOTAL_OVERFLOW_COUNT), get(GLOBAL_QUEUE_DEPTH), get(BLOCKING_QUEUE_DEPTH)
+                get(TOTAL_OVERFLOW_COUNT), get(GLOBAL_QUEUE_DEPTH), get(BLOCKING_QUEUE_DEPTH),
+                get(MAX_GLOBAL_QUEUE_DEPTH), get(P50_GLOBAL_QUEUE_DEPTH),
+                get(P90_GLOBAL_QUEUE_DEPTH), get(P99_GLOBAL_QUEUE_DEPTH)
             );
         }
     }
 
     /**
-     * Holds the 3 actionable duration fields for a single task monitor.
+     * Holds the 4 actionable fields for a single task monitor: three duration
+     * metrics plus a rejection counter.
      * Extends {@link NativeStatsBlock} so it can be decoded from a positional {@code long[]} array.
      */
     public static class TaskMonitorValues extends NativeStatsBlock implements Writeable {
@@ -262,9 +298,10 @@ public class DataFusionPluginStats implements PluginStats {
         public static final int TOTAL_POLL_DURATION_MS = 0;
         public static final int TOTAL_SCHEDULED_DURATION_MS = 1;
         public static final int TOTAL_IDLE_DURATION_MS = 2;
-        public static final int SIZE = 3;
+        public static final int REJECTED = 3;
+        public static final int SIZE = 4;
 
-        static final TaskMonitorValues EMPTY = new TaskMonitorValues(0, 0, 0);
+        static final TaskMonitorValues EMPTY = new TaskMonitorValues(0, 0, 0, 0);
 
         /**
          * Creates a TaskMonitorValues view over a slice of the given array.
@@ -277,22 +314,22 @@ public class DataFusionPluginStats implements PluginStats {
         }
 
         /**
-         * Writeable deserialization constructor — keeps the existing 3-arg shape
-         * so that callers using {@code new TaskMonitorValues(a, b, c)} still compile.
+         * Writeable deserialization constructor — accepts 4 args (poll, scheduled, idle, rejected).
          */
         public TaskMonitorValues(
             long totalPollDurationMs,
             long totalScheduledDurationMs,
-            long totalIdleDurationMs
+            long totalIdleDurationMs,
+            long rejected
         ) {
-            super(new long[] { totalPollDurationMs, totalScheduledDurationMs, totalIdleDurationMs }, 0, SIZE);
+            super(new long[] { totalPollDurationMs, totalScheduledDurationMs, totalIdleDurationMs, rejected }, 0, SIZE);
         }
 
         /**
          * Read from a stream.
          */
         public TaskMonitorValues(StreamInput in) throws IOException {
-            super(new long[] { in.readVLong(), in.readVLong(), in.readVLong() }, 0, SIZE);
+            super(new long[] { in.readVLong(), in.readVLong(), in.readVLong(), in.readVLong() }, 0, SIZE);
         }
 
         @Override
@@ -305,17 +342,20 @@ public class DataFusionPluginStats implements PluginStats {
             out.writeVLong(get(TOTAL_POLL_DURATION_MS));
             out.writeVLong(get(TOTAL_SCHEDULED_DURATION_MS));
             out.writeVLong(get(TOTAL_IDLE_DURATION_MS));
+            out.writeVLong(get(REJECTED));
         }
 
         public void toXContent(XContentBuilder builder) throws IOException {
             builder.field("total_poll_duration_ms", get(TOTAL_POLL_DURATION_MS));
             builder.field("total_scheduled_duration_ms", get(TOTAL_SCHEDULED_DURATION_MS));
             builder.field("total_idle_duration_ms", get(TOTAL_IDLE_DURATION_MS));
+            builder.field("rejected", get(REJECTED));
         }
 
         public long getTotalPollDurationMs() { return get(TOTAL_POLL_DURATION_MS); }
         public long getTotalScheduledDurationMs() { return get(TOTAL_SCHEDULED_DURATION_MS); }
         public long getTotalIdleDurationMs() { return get(TOTAL_IDLE_DURATION_MS); }
+        public long getRejected() { return get(REJECTED); }
 
         @Override
         public boolean equals(Object o) {
@@ -324,12 +364,16 @@ public class DataFusionPluginStats implements PluginStats {
             TaskMonitorValues that = (TaskMonitorValues) o;
             return get(TOTAL_POLL_DURATION_MS) == that.get(TOTAL_POLL_DURATION_MS)
                 && get(TOTAL_SCHEDULED_DURATION_MS) == that.get(TOTAL_SCHEDULED_DURATION_MS)
-                && get(TOTAL_IDLE_DURATION_MS) == that.get(TOTAL_IDLE_DURATION_MS);
+                && get(TOTAL_IDLE_DURATION_MS) == that.get(TOTAL_IDLE_DURATION_MS)
+                && get(REJECTED) == that.get(REJECTED);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(get(TOTAL_POLL_DURATION_MS), get(TOTAL_SCHEDULED_DURATION_MS), get(TOTAL_IDLE_DURATION_MS));
+            return Objects.hash(
+                get(TOTAL_POLL_DURATION_MS), get(TOTAL_SCHEDULED_DURATION_MS),
+                get(TOTAL_IDLE_DURATION_MS), get(REJECTED)
+            );
         }
     }
 }

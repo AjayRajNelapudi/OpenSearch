@@ -12,6 +12,7 @@ use std::num::NonZeroUsize;
  * compatible open source license.
  */
 use std::ptr::addr_of_mut;
+use std::sync::atomic::{AtomicU64, Ordering};
 use jni::objects::{JByteArray, JClass, JMap, JObject};
 use jni::objects::JLongArray;
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jlongArray, jstring};
@@ -47,6 +48,7 @@ mod io;
 mod runtime_manager;
 mod metrics_collector;
 mod metrics_layout;
+mod queue_depth_histogram;
 mod cache_jni;
 mod partial_agg_optimizer;
 mod query_executor;
@@ -112,6 +114,28 @@ static INDEXED_QUERY_EXECUTION_MONITOR: Lazy<TaskMonitor> = Lazy::new(|| {
     TaskMonitor::with_slow_poll_threshold(Duration::from_micros(100)).clone()
 });
 
+// Per-operation rejection counters (incremented with Relaxed ordering)
+static QUERY_EXECUTION_REJECTED: AtomicU64 = AtomicU64::new(0);
+static STREAM_NEXT_REJECTED: AtomicU64 = AtomicU64::new(0);
+static FETCH_PHASE_REJECTED: AtomicU64 = AtomicU64::new(0);
+static SEGMENT_STATS_REJECTED: AtomicU64 = AtomicU64::new(0);
+static INDEXED_QUERY_EXECUTION_REJECTED: AtomicU64 = AtomicU64::new(0);
+
+/// Per-runtime queue depth histograms for percentile computation.
+/// Sampled at each is_saturated() call (JNI entry points).
+use crate::queue_depth_histogram::QueueDepthHistogram;
+use once_cell::sync::Lazy as OnceLazy;
+static IO_QUEUE_DEPTH_HISTOGRAM: OnceLazy<QueueDepthHistogram> = OnceLazy::new(QueueDepthHistogram::new);
+static CPU_QUEUE_DEPTH_HISTOGRAM: OnceLazy<QueueDepthHistogram> = OnceLazy::new(QueueDepthHistogram::new);
+
+/// Threshold multiplier for new query dispatches (executeQueryPhaseAsync, executeIndexedQueryAsync).
+/// Saturation is detected when global_queue_depth >= workers_count * MULTIPLIER.
+const MULTIPLIER: u64 = 10;
+
+/// Threshold multiplier for continuation operations (streamNext, fetchSegmentStats).
+/// Set higher than MULTIPLIER (3x) to allow in-flight work to complete under moderate saturation.
+const CONTINUATION_MULTIPLIER: u64 = 30;
+
 // Global runtime manager
 static TOKIO_RUNTIME_MANAGER: OnceLock<Arc<RuntimeManager>> = OnceLock::new();
 
@@ -142,13 +166,14 @@ where
     })
 }
 
-/// Helper: TaskMonitor → `[i64; 3]` flat array (from cumulative metrics)
-fn task_monitor_to_longs(monitor: &TaskMonitor) -> [i64; metrics_layout::TASK_MONITOR_SIZE] {
+/// Helper: TaskMonitor → `[i64; 4]` flat array (from cumulative metrics + rejected counter)
+fn task_monitor_to_longs(monitor: &TaskMonitor, rejected: u64) -> [i64; metrics_layout::TASK_MONITOR_SIZE] {
     let m = monitor.cumulative();
     let mut buf = [0i64; metrics_layout::TASK_MONITOR_SIZE];
     buf[metrics_layout::TASK_MONITOR_TOTAL_POLL_DURATION_MS] = m.total_poll_duration.as_millis() as i64;
     buf[metrics_layout::TASK_MONITOR_TOTAL_SCHEDULED_DURATION_MS] = m.total_scheduled_duration.as_millis() as i64;
     buf[metrics_layout::TASK_MONITOR_TOTAL_IDLE_DURATION_MS] = m.total_idle_duration.as_millis() as i64;
+    buf[metrics_layout::TASK_MONITOR_REJECTED] = rejected as i64;
     buf
 }
 
@@ -172,21 +197,21 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_stats<'lo
         }
     }
 
-    // Task monitors [12..27]
+    // Task monitors [12..32]
     let base = metrics_layout::RUNTIME_SIZE * 2;
-    let qe = task_monitor_to_longs(&QUERY_EXECUTION_MONITOR);
+    let qe = task_monitor_to_longs(&QUERY_EXECUTION_MONITOR, QUERY_EXECUTION_REJECTED.load(Ordering::Relaxed));
     buf[base..base + metrics_layout::TASK_MONITOR_SIZE].copy_from_slice(&qe);
 
-    let sn = task_monitor_to_longs(&STREAM_NEXT_MONITOR);
+    let sn = task_monitor_to_longs(&STREAM_NEXT_MONITOR, STREAM_NEXT_REJECTED.load(Ordering::Relaxed));
     buf[base + metrics_layout::TASK_MONITOR_SIZE..base + metrics_layout::TASK_MONITOR_SIZE * 2].copy_from_slice(&sn);
 
-    let fp = task_monitor_to_longs(&FETCH_PHASE_MONITOR);
+    let fp = task_monitor_to_longs(&FETCH_PHASE_MONITOR, FETCH_PHASE_REJECTED.load(Ordering::Relaxed));
     buf[base + metrics_layout::TASK_MONITOR_SIZE * 2..base + metrics_layout::TASK_MONITOR_SIZE * 3].copy_from_slice(&fp);
 
-    let ss = task_monitor_to_longs(&SEGMENT_STATS_MONITOR);
+    let ss = task_monitor_to_longs(&SEGMENT_STATS_MONITOR, SEGMENT_STATS_REJECTED.load(Ordering::Relaxed));
     buf[base + metrics_layout::TASK_MONITOR_SIZE * 3..base + metrics_layout::TASK_MONITOR_SIZE * 4].copy_from_slice(&ss);
 
-    let iq = task_monitor_to_longs(&INDEXED_QUERY_EXECUTION_MONITOR);
+    let iq = task_monitor_to_longs(&INDEXED_QUERY_EXECUTION_MONITOR, INDEXED_QUERY_EXECUTION_REJECTED.load(Ordering::Relaxed));
     buf[base + metrics_layout::TASK_MONITOR_SIZE * 4..base + metrics_layout::TASK_MONITOR_SIZE * 5].copy_from_slice(&iq);
 
     match env.new_long_array(metrics_layout::TOTAL_SIZE as i32) {
@@ -616,6 +641,14 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
         }
     };
 
+    // Saturation guard: reject before spawning async work
+    if manager.is_saturated(MULTIPLIER, &IO_QUEUE_DEPTH_HISTOGRAM, &CPU_QUEUE_DEPTH_HISTOGRAM) {
+        QUERY_EXECUTION_REJECTED.fetch_add(1, Ordering::Relaxed);
+        set_action_listener_error(&mut env, listener,
+            &DataFusionError::Execution("[REJECTED] Tokio runtime saturated".to_string()));
+        return;
+    }
+
     // ===== EXTRACT ALL JAVA DATA BEFORE ASYNC BLOCK =====
     let table_name: String = match env.get_string(&table_name) {
         Ok(s) => s.into(),
@@ -706,6 +739,14 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_fetchSegm
         }
     };
 
+    // Saturation guard: reject before spawning async work
+    if manager.is_saturated(CONTINUATION_MULTIPLIER, &IO_QUEUE_DEPTH_HISTOGRAM, &CPU_QUEUE_DEPTH_HISTOGRAM) {
+        SEGMENT_STATS_REJECTED.fetch_add(1, Ordering::Relaxed);
+        set_action_listener_error(&mut env, listener,
+            &DataFusionError::Execution("[REJECTED] Tokio runtime saturated".to_string()));
+        return;
+    }
+
     // Convert listener to GlobalRef (thread-safe)
     let listener_ref = match env.new_global_ref(&listener) {
         Ok(r) => r,
@@ -758,6 +799,14 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamNex
             return;
         }
     };
+
+    // Saturation guard: reject before spawning async work
+    if manager.is_saturated(CONTINUATION_MULTIPLIER, &IO_QUEUE_DEPTH_HISTOGRAM, &CPU_QUEUE_DEPTH_HISTOGRAM) {
+        STREAM_NEXT_REJECTED.fetch_add(1, Ordering::Relaxed);
+        set_action_listener_error(&mut env, listener,
+            &DataFusionError::Execution("[REJECTED] Tokio runtime saturated".to_string()));
+        return;
+    }
 
     // Convert listener to GlobalRef
     let listener_ref = match env.new_global_ref(&listener) {
@@ -977,6 +1026,14 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeIn
             return;
         }
     };
+
+    // Saturation guard: reject before spawning async work
+    if manager.is_saturated(MULTIPLIER, &IO_QUEUE_DEPTH_HISTOGRAM, &CPU_QUEUE_DEPTH_HISTOGRAM) {
+        INDEXED_QUERY_EXECUTION_REJECTED.fetch_add(1, Ordering::Relaxed);
+        set_action_listener_error(&mut env, listener,
+            &DataFusionError::Execution("[REJECTED] Tokio runtime saturated".to_string()));
+        return;
+    }
 
     // Extract all Java data before async block
     let seg_max_docs = {

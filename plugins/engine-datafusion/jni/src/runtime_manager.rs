@@ -2,10 +2,17 @@ use crate::executor::DedicatedExecutor;
 use crate::io::register_io_runtime;
 use vectorized_exec_spi::log_info;
 use crate::metrics_collector::MetricsCollector;
+use crate::queue_depth_histogram::QueueDepthHistogram;
 use log::info;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use datafusion::error::DataFusionError;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::{Builder, Handle, Runtime};
+
+/// High-water mark for IO runtime global_queue_depth, updated at each saturation check.
+pub static MAX_IO_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+/// High-water mark for CPU runtime global_queue_depth, updated at each saturation check.
+pub static MAX_CPU_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -120,12 +127,12 @@ impl RuntimeManager {
         let cpu_executor = DedicatedExecutor::new("datafusion-cpu", cpu_runtime_builder);
 
         // Create MetricsCollector for IO runtime
-        let io_metrics = Arc::new(MetricsCollector::new(io_runtime.handle()));
+        let io_metrics = Arc::new(MetricsCollector::new(io_runtime.handle(), &MAX_IO_QUEUE_DEPTH, &*crate::IO_QUEUE_DEPTH_HISTOGRAM));
 
         // Create MetricsCollector for CPU runtime (if handle is available)
         let cpu_metrics = cpu_executor
             .handle()
-            .map(|handle| Arc::new(MetricsCollector::new(&handle)));
+            .map(|handle| Arc::new(MetricsCollector::new(&handle, &MAX_CPU_QUEUE_DEPTH, &*crate::CPU_QUEUE_DEPTH_HISTOGRAM)));
 
         Self {
             io_runtime,
@@ -137,6 +144,49 @@ impl RuntimeManager {
 
     pub fn cpu_executor(&self) -> DedicatedExecutor {
         self.cpu_executor.clone()
+    }
+
+    /// Returns `true` if either the IO or CPU runtime is saturated.
+    ///
+    /// Saturation is defined as `global_queue_depth >= workers_count * multiplier`
+    /// for either runtime. This is a synchronous atomic read — no async work
+    /// or locks are involved.
+    ///
+    /// If the CPU runtime handle is unavailable (executor shut down), only the
+    /// IO runtime is evaluated.
+    ///
+    /// Falls back to `false` when `tokio_unstable` is not set, matching the
+    /// `MetricsCollector` pattern.
+    #[cfg(not(tokio_unstable))]
+    pub fn is_saturated(&self, _multiplier: u64, _io_hist: &QueueDepthHistogram, _cpu_hist: &QueueDepthHistogram) -> bool {
+        false
+    }
+
+    #[cfg(tokio_unstable)]
+    pub fn is_saturated(&self, multiplier: u64, io_hist: &QueueDepthHistogram, cpu_hist: &QueueDepthHistogram) -> bool {
+        if Self::is_handle_saturated(self.io_runtime.handle(), multiplier, &MAX_IO_QUEUE_DEPTH, io_hist) {
+            return true;
+        }
+        if let Some(cpu_handle) = self.cpu_executor.handle() {
+            if Self::is_handle_saturated(&cpu_handle, multiplier, &MAX_CPU_QUEUE_DEPTH, cpu_hist) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns `true` if the given runtime handle's `global_queue_depth`
+    /// equals or exceeds `workers_count * multiplier`.
+    /// Also updates the provided high-water mark counter via `fetch_max`
+    /// and records the depth sample into the histogram.
+    #[cfg(tokio_unstable)]
+    fn is_handle_saturated(handle: &Handle, multiplier: u64, max_depth: &AtomicU64, hist: &QueueDepthHistogram) -> bool {
+        let m = handle.metrics();
+        let depth = m.global_queue_depth() as u64;
+        max_depth.fetch_max(depth, Ordering::Relaxed);
+        hist.record(depth);
+        let threshold = (m.num_workers() as u64) * multiplier;
+        depth >= threshold
     }
 
     pub async fn run<Fut, T>(&self, fut: Fut) -> Result<T, DataFusionError>

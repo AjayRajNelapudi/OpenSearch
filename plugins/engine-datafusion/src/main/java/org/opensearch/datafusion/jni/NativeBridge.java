@@ -112,6 +112,6 @@ public final class NativeBridge {
      **/
     public static native void createTestSlicedArray(int offset, int length, ActionListener<long[]> listener);
 
-    // Flat long[] stats collection (27 elements, see layout.rs)
+    // Flat long[] stats collection (40 elements, see metrics_layout.rs)
     public static native long[] stats();
 }

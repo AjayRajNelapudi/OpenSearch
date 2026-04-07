@@ -42,19 +42,16 @@ public class NativeExecutorsStatsTests {
     @Provide
     Arbitrary<DataFusionPluginStats.RuntimeValues> runtimeValues() {
         Arbitrary<Long> posLong = Arbitraries.longs().between(0, Long.MAX_VALUE / 2);
-        return Combinators.combine(posLong, posLong, posLong, posLong, posLong, posLong)
-            .as((a, b, c, d, e, f) -> {
-                long[] data = new long[] { a, b, c, d, e, f };
-                return new DataFusionPluginStats.RuntimeValues(data, 0);
-            });
+        return posLong.array(long[].class).ofSize(10)
+            .map(arr -> new DataFusionPluginStats.RuntimeValues(arr, 0));
     }
 
     @Provide
     Arbitrary<DataFusionPluginStats.TaskMonitorValues> taskMonitorValues() {
         Arbitrary<Long> posLong = Arbitraries.longs().between(0, Long.MAX_VALUE / 2);
-        return Combinators.combine(posLong, posLong, posLong)
-            .as((a, b, c) -> {
-                long[] data = new long[] { a, b, c };
+        return Combinators.combine(posLong, posLong, posLong, posLong)
+            .as((a, b, c, d) -> {
+                long[] data = new long[] { a, b, c, d };
                 return new DataFusionPluginStats.TaskMonitorValues(data, 0);
             });
     }
@@ -103,6 +100,29 @@ public class NativeExecutorsStatsTests {
             "JSON output should not contain in_flight fields");
         assertFalse(json.toString().contains("acquired"),
             "JSON output should not contain acquired fields");
+    }
+
+    // Feature: rust-layer-rejection, Property 5: JSON output contains rejected field
+    @Property(tries = 100)
+    @SuppressWarnings("unchecked")
+    void jsonOutputContainsRejectedFieldInEachTaskMonitor(
+            @ForAll("dataFusionPluginStats") DataFusionPluginStats pluginStats) throws IOException {
+        NativeExecutorsStats stats = new NativeExecutorsStats(pluginStats);
+        XContentBuilder builder = XContentFactory.jsonBuilder();
+        builder.startObject();
+        stats.toXContent(builder, ToXContent.EMPTY_PARAMS);
+        builder.endObject();
+        Map<String, Object> json = XContentHelper.convertToMap(
+            BytesReference.bytes(builder), true, builder.contentType()).v2();
+
+        // Validates: Requirements 6.5, 7.1
+        Map<String, Object> taskMonitors = (Map<String, Object>) json.get("task_monitors");
+        String[] monitorNames = { "query_execution", "stream_next", "fetch_phase", "segment_stats", "indexed_query_execution" };
+        for (String name : monitorNames) {
+            Map<String, Object> monitor = (Map<String, Object>) taskMonitors.get(name);
+            assertTrue(monitor.containsKey("rejected"),
+                "task monitor '" + name + "' should contain a 'rejected' field");
+        }
     }
 
     @Property(tries = 1)
