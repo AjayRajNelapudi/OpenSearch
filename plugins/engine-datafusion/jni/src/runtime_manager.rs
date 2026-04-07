@@ -133,7 +133,7 @@ impl RuntimeManager {
         let cpu_executor = DedicatedExecutor::new("datafusion-cpu", cpu_runtime_builder);
 
         // Create MetricsCollector for IO runtime
-        let io_metrics = Arc::new(MetricsCollector::new(io_runtime.handle(), &MAX_IO_QUEUE_DEPTH, &*crate::IO_QUEUE_DEPTH_HISTOGRAM));
+        let io_metrics = Arc::new(MetricsCollector::new(io_runtime_rt.handle(), &MAX_IO_QUEUE_DEPTH, &*crate::IO_QUEUE_DEPTH_HISTOGRAM));
 
         // Create MetricsCollector for CPU runtime (if handle is available)
         let cpu_metrics = cpu_executor
@@ -171,7 +171,7 @@ impl RuntimeManager {
 
     #[cfg(tokio_unstable)]
     pub fn is_saturated(&self, multiplier: u64, io_hist: &QueueDepthHistogram, cpu_hist: &QueueDepthHistogram) -> bool {
-        if Self::is_handle_saturated(self.io_runtime.handle(), multiplier, &MAX_IO_QUEUE_DEPTH, io_hist) {
+        if Self::is_handle_saturated(&self.io_runtime, multiplier, &MAX_IO_QUEUE_DEPTH, io_hist) {
             return true;
         }
         if let Some(cpu_handle) = self.cpu_executor.handle() {
