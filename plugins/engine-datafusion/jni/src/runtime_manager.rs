@@ -88,8 +88,8 @@ pub struct RuntimeManager {
 impl RuntimeManager {
     pub fn new(cpu_threads: usize) -> Self {
         Self::with_config(RuntimeConfig::new()
-            .with_cpu_threads(cpu_threads)
-            .with_io_threads(cpu_threads)
+            .with_cpu_threads(1)
+            .with_io_threads(1)
             .with_cpu_multiplier(1.0)
             .with_io_multiplier(2.0)
         )
