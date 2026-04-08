@@ -42,18 +42,15 @@ public class NativeExecutorsStatsTests {
     @Provide
     Arbitrary<DataFusionPluginStats.RuntimeValues> runtimeValues() {
         Arbitrary<Long> posLong = Arbitraries.longs().between(0, Long.MAX_VALUE / 2);
-        return posLong.array(long[].class).ofSize(10)
+        return posLong.array(long[].class).ofSize(22)
             .map(arr -> new DataFusionPluginStats.RuntimeValues(arr, 0));
     }
 
     @Provide
     Arbitrary<DataFusionPluginStats.TaskMonitorValues> taskMonitorValues() {
         Arbitrary<Long> posLong = Arbitraries.longs().between(0, Long.MAX_VALUE / 2);
-        return Combinators.combine(posLong, posLong, posLong, posLong)
-            .as((a, b, c, d) -> {
-                long[] data = new long[] { a, b, c, d };
-                return new DataFusionPluginStats.TaskMonitorValues(data, 0);
-            });
+        return posLong.array(long[].class).ofSize(19)
+            .map(arr -> new DataFusionPluginStats.TaskMonitorValues(arr, 0));
     }
 
     @Provide

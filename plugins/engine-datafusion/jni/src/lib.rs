@@ -168,7 +168,7 @@ where
     })
 }
 
-/// Helper: TaskMonitor → `[i64; 4]` flat array (from cumulative metrics + rejected counter)
+/// Helper: TaskMonitor → `[i64; TASK_MONITOR_SIZE]` flat array (from cumulative metrics + rejected counter)
 fn task_monitor_to_longs(monitor: &TaskMonitor, rejected: u64) -> [i64; metrics_layout::TASK_MONITOR_SIZE] {
     let m = monitor.cumulative();
     let mut buf = [0i64; metrics_layout::TASK_MONITOR_SIZE];
@@ -176,6 +176,21 @@ fn task_monitor_to_longs(monitor: &TaskMonitor, rejected: u64) -> [i64; metrics_
     buf[metrics_layout::TASK_MONITOR_TOTAL_SCHEDULED_DURATION_MS] = m.total_scheduled_duration.as_millis() as i64;
     buf[metrics_layout::TASK_MONITOR_TOTAL_IDLE_DURATION_MS] = m.total_idle_duration.as_millis() as i64;
     buf[metrics_layout::TASK_MONITOR_REJECTED] = rejected as i64;
+    buf[metrics_layout::TASK_MONITOR_INSTRUMENTED_COUNT] = m.instrumented_count as i64;
+    buf[metrics_layout::TASK_MONITOR_DROPPED_COUNT] = m.dropped_count as i64;
+    buf[metrics_layout::TASK_MONITOR_FIRST_POLL_COUNT] = m.first_poll_count as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_FIRST_POLL_DELAY_MS] = m.total_first_poll_delay.as_millis() as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_IDLED_COUNT] = m.total_idled_count as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_SCHEDULED_COUNT] = m.total_scheduled_count as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_POLL_COUNT] = m.total_poll_count as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_FAST_POLL_COUNT] = m.total_fast_poll_count as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_FAST_POLL_DURATION_MS] = m.total_fast_poll_duration.as_millis() as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_SLOW_POLL_COUNT] = m.total_slow_poll_count as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_SLOW_POLL_DURATION_MS] = m.total_slow_poll_duration.as_millis() as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_SHORT_DELAY_COUNT] = m.total_short_delay_count as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_LONG_DELAY_COUNT] = m.total_long_delay_count as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_SHORT_DELAY_DURATION_MS] = m.total_short_delay_duration.as_millis() as i64;
+    buf[metrics_layout::TASK_MONITOR_TOTAL_LONG_DELAY_DURATION_MS] = m.total_long_delay_duration.as_millis() as i64;
     buf
 }
 
