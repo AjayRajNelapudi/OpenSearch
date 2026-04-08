@@ -96,8 +96,8 @@ impl RuntimeManager {
         Self::with_config(RuntimeConfig::new()
             .with_cpu_threads(cpu_threads)
             .with_io_threads(cpu_threads)
-            .with_cpu_multiplier(1.0)
-            .with_io_multiplier(2.0)
+            .with_cpu_multiplier(3.0)
+            .with_io_multiplier(7.0)
         )
     }
 
