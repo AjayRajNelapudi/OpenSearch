@@ -114,7 +114,7 @@ public class AdmissionForClusterManagerIT extends OpenSearchIntegTestCase {
     }
 
     public void testAdmissionControlEnforced() throws Exception {
-        cMResourceCollector.collectNodeResourceUsageStats(clusterManagerNodeId, System.currentTimeMillis(), 97, 99, new IoUsageStats(98));
+        cMResourceCollector.collectNodeResourceUsageStats(clusterManagerNodeId, System.currentTimeMillis(), 97, 99, new IoUsageStats(98), 0.0);
 
         // Write API on ClusterManager
         assertAcked(prepareCreate("test").setMapping("field", "type=text").setAliases("{\"alias1\" : {}}"));
@@ -149,7 +149,7 @@ public class AdmissionForClusterManagerIT extends OpenSearchIntegTestCase {
 
     public void testAdmissionControlEnabledOnNoBreach() throws InterruptedException {
         // CPU usage is less than threshold 50%
-        cMResourceCollector.collectNodeResourceUsageStats(clusterManagerNodeId, System.currentTimeMillis(), 97, 35, new IoUsageStats(98));
+        cMResourceCollector.collectNodeResourceUsageStats(clusterManagerNodeId, System.currentTimeMillis(), 97, 35, new IoUsageStats(98), 0.0);
 
         // Write API on ClusterManager
         assertAcked(prepareCreate("test").setMapping("field", "type=text").setAliases("{\"alias1\" : {}}").execute().actionGet());
@@ -174,7 +174,7 @@ public class AdmissionForClusterManagerIT extends OpenSearchIntegTestCase {
     public void admissionControlDisabledOnBreach(Settings admission) throws InterruptedException {
         client().admin().cluster().prepareUpdateSettings().setTransientSettings(admission).execute().actionGet();
 
-        cMResourceCollector.collectNodeResourceUsageStats(clusterManagerNodeId, System.currentTimeMillis(), 97, 97, new IoUsageStats(98));
+        cMResourceCollector.collectNodeResourceUsageStats(clusterManagerNodeId, System.currentTimeMillis(), 97, 97, new IoUsageStats(98), 0.0);
 
         // Write API on ClusterManager
         assertAcked(prepareCreate("test").setMapping("field", "type=text").setAliases("{\"alias1\" : {}}").execute().actionGet());
@@ -188,7 +188,7 @@ public class AdmissionForClusterManagerIT extends OpenSearchIntegTestCase {
     }
 
     public void testAdmissionControlResponseStatus() throws Exception {
-        cMResourceCollector.collectNodeResourceUsageStats(clusterManagerNodeId, System.currentTimeMillis(), 97, 99, new IoUsageStats(98));
+        cMResourceCollector.collectNodeResourceUsageStats(clusterManagerNodeId, System.currentTimeMillis(), 97, 99, new IoUsageStats(98), 0.0);
 
         // Write API on ClusterManager
         assertAcked(prepareCreate("test").setMapping("field", "type=text").setAliases("{\"alias1\" : {}}"));

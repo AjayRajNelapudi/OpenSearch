@@ -22,6 +22,7 @@ import java.util.Locale;
 import static org.opensearch.node.NodeResourceUsageStats.Fields.CPU_UTILIZATION_PERCENT;
 import static org.opensearch.node.NodeResourceUsageStats.Fields.IO_USAGE_STATS;
 import static org.opensearch.node.NodeResourceUsageStats.Fields.MEMORY_UTILIZATION_PERCENT;
+import static org.opensearch.node.NodeResourceUsageStats.Fields.NATIVE_MEMORY_UTILIZATION;
 import static org.opensearch.node.NodeResourceUsageStats.Fields.TIMESTAMP;
 
 /**
@@ -35,19 +36,22 @@ public class NodeResourceUsageStats implements Writeable, ToXContentFragment {
     double cpuUtilizationPercent;
     double memoryUtilizationPercent;
     private IoUsageStats ioUsageStats;
+    double nativeMemoryUtilization;
 
     public NodeResourceUsageStats(
         String nodeId,
         long timestamp,
         double memoryUtilizationPercent,
         double cpuUtilizationPercent,
-        IoUsageStats ioUsageStats
+        IoUsageStats ioUsageStats,
+        double nativeMemoryUtilization
     ) {
         this.nodeId = nodeId;
         this.timestamp = timestamp;
         this.cpuUtilizationPercent = cpuUtilizationPercent;
         this.memoryUtilizationPercent = memoryUtilizationPercent;
         this.ioUsageStats = ioUsageStats;
+        this.nativeMemoryUtilization = nativeMemoryUtilization;
     }
 
     public NodeResourceUsageStats(StreamInput in) throws IOException {
@@ -60,6 +64,11 @@ public class NodeResourceUsageStats implements Writeable, ToXContentFragment {
         } else {
             this.ioUsageStats = null;
         }
+        if (in.getVersion().onOrAfter(Version.V_3_7_0)) {
+            this.nativeMemoryUtilization = in.readDouble();
+        } else {
+            this.nativeMemoryUtilization = 0.0;
+        }
     }
 
     @Override
@@ -70,6 +79,9 @@ public class NodeResourceUsageStats implements Writeable, ToXContentFragment {
         out.writeDouble(this.memoryUtilizationPercent);
         if (out.getVersion().onOrAfter(Version.V_2_13_0)) {
             out.writeOptionalWriteable(this.ioUsageStats);
+        }
+        if (out.getVersion().onOrAfter(Version.V_3_7_0)) {
+            out.writeDouble(this.nativeMemoryUtilization);
         }
     }
 
@@ -83,6 +95,7 @@ public class NodeResourceUsageStats implements Writeable, ToXContentFragment {
         if (this.ioUsageStats != null) {
             sb.append(", ").append(this.getIoUsageStats());
         }
+        sb.append(", Native memory utilization: ").append(String.format(Locale.ROOT, "%.1f", this.getNativeMemoryUtilization()));
         sb.append(")");
         return sb.toString();
     }
@@ -93,7 +106,8 @@ public class NodeResourceUsageStats implements Writeable, ToXContentFragment {
             nodeResourceUsageStats.timestamp,
             nodeResourceUsageStats.memoryUtilizationPercent,
             nodeResourceUsageStats.cpuUtilizationPercent,
-            nodeResourceUsageStats.ioUsageStats
+            nodeResourceUsageStats.ioUsageStats,
+            nodeResourceUsageStats.nativeMemoryUtilization
         );
     }
 
@@ -117,6 +131,10 @@ public class NodeResourceUsageStats implements Writeable, ToXContentFragment {
         return timestamp;
     }
 
+    public double getNativeMemoryUtilization() {
+        return nativeMemoryUtilization;
+    }
+
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(nodeId);
@@ -126,6 +144,7 @@ public class NodeResourceUsageStats implements Writeable, ToXContentFragment {
         if (ioUsageStats != null) {
             builder.field(IO_USAGE_STATS, ioUsageStats);
         }
+        builder.field(NATIVE_MEMORY_UTILIZATION, String.format(Locale.ROOT, "%.1f", nativeMemoryUtilization));
         builder.endObject();
         return builder;
     }
@@ -140,5 +159,6 @@ public class NodeResourceUsageStats implements Writeable, ToXContentFragment {
         static final String CPU_UTILIZATION_PERCENT = "cpu_utilization_percent";
         static final String MEMORY_UTILIZATION_PERCENT = "memory_utilization_percent";
         static final String IO_USAGE_STATS = "io_usage_stats";
+        static final String NATIVE_MEMORY_UTILIZATION = "native_memory_utilization";
     }
 }

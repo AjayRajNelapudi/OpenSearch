@@ -14,6 +14,7 @@ import org.opensearch.nativebridge.spi.NativeCall;
 import org.opensearch.nativebridge.spi.NativeLibraryLoader;
 import org.opensearch.plugin.stats.DataFusionStats;
 import org.opensearch.plugin.stats.NativeExecutorsStats;
+import org.opensearch.plugin.stats.ResourceUsageStats;
 
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -286,7 +287,10 @@ public final class NativeBridge {
                 taskMonitors.put(op.key(), StatsLayout.readTaskMonitor(seg, op.key()));
             }
 
-            return new DataFusionStats(new NativeExecutorsStats(ioRuntime, cpuRuntime, taskMonitors));
+            // Resource usage
+            var resourceUsage = StatsLayout.readResourceUsage(seg);
+
+            return new DataFusionStats(new NativeExecutorsStats(ioRuntime, cpuRuntime, taskMonitors), resourceUsage);
         }
     }
 

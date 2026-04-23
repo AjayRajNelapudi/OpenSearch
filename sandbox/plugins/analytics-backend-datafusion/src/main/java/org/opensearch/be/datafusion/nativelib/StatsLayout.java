@@ -9,6 +9,7 @@
 package org.opensearch.be.datafusion.nativelib;
 
 import org.opensearch.plugin.stats.NativeExecutorsStats;
+import org.opensearch.plugin.stats.ResourceUsageStats;
 
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemoryLayout.PathElement;
@@ -21,7 +22,7 @@ import java.lang.invoke.VarHandle;
  * Defines the {@code MemoryLayout.structLayout} mirroring the Rust {@code DfStatsBuffer}
  * and provides {@link VarHandle} accessors for each field via layout path navigation.
  *
- * <p>The layout contains 6 named groups (2 runtime × 8 fields + 4 task monitor × 3 fields = 28 longs = 224 bytes).
+ * <p>The layout contains 7 named groups (2 runtime × 8 fields + 4 task monitor × 3 fields + 1 resource_usage × 1 field = 29 longs = 232 bytes).
  */
 public final class StatsLayout {
 
@@ -43,13 +44,14 @@ public final class StatsLayout {
         taskMonitorGroup("query_execution"),
         taskMonitorGroup("stream_next"),
         taskMonitorGroup("fetch_phase"),
-        taskMonitorGroup("segment_stats")
+        taskMonitorGroup("segment_stats"),
+        resourceUsageGroup("resource_usage")
     );
 
     static {
-        if (LAYOUT.byteSize() != 28 * Long.BYTES) {
+        if (LAYOUT.byteSize() != 29 * Long.BYTES) {
             throw new AssertionError(
-                "StatsLayout size mismatch: expected " + (28 * Long.BYTES) + " but got " + LAYOUT.byteSize()
+                "StatsLayout size mismatch: expected " + (29 * Long.BYTES) + " but got " + LAYOUT.byteSize()
             );
         }
     }
@@ -93,6 +95,9 @@ public final class StatsLayout {
     private static final VarHandle SS_TOTAL_POLL_DURATION_MS = handle("segment_stats", "total_poll_duration_ms");
     private static final VarHandle SS_TOTAL_SCHEDULED_DURATION_MS = handle("segment_stats", "total_scheduled_duration_ms");
     private static final VarHandle SS_TOTAL_IDLE_DURATION_MS = handle("segment_stats", "total_idle_duration_ms");
+
+    // ---- VarHandle for resource_usage fields ----
+    private static final VarHandle RU_NATIVE_MEMORY_UTILIZATION = handle("resource_usage", "native_memory_utilization");
 
     private StatsLayout() {}
 
@@ -145,6 +150,17 @@ public final class StatsLayout {
         );
     }
 
+    /**
+     * Read the resource_usage group from the segment.
+     *
+     * @param seg the memory segment containing the DfStatsBuffer
+     * @return a populated ResourceUsageStats instance
+     */
+    public static ResourceUsageStats readResourceUsage(MemorySegment seg) {
+        long raw = (long) RU_NATIVE_MEMORY_UTILIZATION.get(seg, 0L);
+        return new ResourceUsageStats((double) raw);
+    }
+
     // ---- Private helpers ----
 
     private static StructLayout runtimeGroup(String name) {
@@ -165,6 +181,12 @@ public final class StatsLayout {
             ValueLayout.JAVA_LONG.withName("total_poll_duration_ms"),
             ValueLayout.JAVA_LONG.withName("total_scheduled_duration_ms"),
             ValueLayout.JAVA_LONG.withName("total_idle_duration_ms")
+        ).withName(name);
+    }
+
+    private static StructLayout resourceUsageGroup(String name) {
+        return MemoryLayout.structLayout(
+            ValueLayout.JAVA_LONG.withName("native_memory_utilization")
         ).withName(name);
     }
 

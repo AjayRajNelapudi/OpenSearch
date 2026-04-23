@@ -217,6 +217,7 @@ import org.opensearch.persistent.PersistentTasksService;
 import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.AnalysisPlugin;
 import org.opensearch.plugins.CachePlugin;
+import org.opensearch.plugin.stats.BackendStatsProvider;
 import org.opensearch.plugins.CircuitBreakerPlugin;
 import org.opensearch.plugins.ClusterPlugin;
 import org.opensearch.plugins.CryptoKeyProviderPlugin;
@@ -1238,10 +1239,16 @@ public class Node implements Closeable {
                 settings,
                 clusterService.getClusterSettings()
             );
+            final List<BackendStatsProvider> backendStatsProviders = pluginsService.filterPlugins(SearchBackEndPlugin.class)
+                .stream()
+                .map(SearchBackEndPlugin::getBackendStatsProvider)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toList());
             final ResourceUsageCollectorService resourceUsageCollectorService = new ResourceUsageCollectorService(
                 nodeResourceUsageTracker,
                 clusterService,
-                threadPool
+                threadPool,
+                backendStatsProviders
             );
 
             final AdmissionControlService admissionControlService = new AdmissionControlService(

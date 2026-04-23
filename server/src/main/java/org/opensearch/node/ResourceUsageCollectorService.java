@@ -18,10 +18,15 @@ import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
 import org.opensearch.node.resource.tracker.NodeResourceUsageTracker;
+import org.opensearch.plugin.stats.BackendStatsProvider;
+import org.opensearch.plugin.stats.DataFusionStats;
+import org.opensearch.plugin.stats.PluginStats;
+import org.opensearch.plugin.stats.ResourceUsageStats;
 import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentMap;
@@ -46,15 +51,18 @@ public class ResourceUsageCollectorService extends AbstractLifecycleComponent im
 
     private NodeResourceUsageTracker nodeResourceUsageTracker;
     private ClusterService clusterService;
+    private final List<BackendStatsProvider> backendStatsProviders;
 
     public ResourceUsageCollectorService(
         NodeResourceUsageTracker nodeResourceUsageTracker,
         ClusterService clusterService,
-        ThreadPool threadPool
+        ThreadPool threadPool,
+        List<BackendStatsProvider> backendStatsProviders
     ) {
         this.threadPool = threadPool;
         this.nodeResourceUsageTracker = nodeResourceUsageTracker;
         this.clusterService = clusterService;
+        this.backendStatsProviders = backendStatsProviders;
         clusterService.addListener(this);
     }
 
@@ -79,15 +87,24 @@ public class ResourceUsageCollectorService extends AbstractLifecycleComponent im
         long timestamp,
         double memoryUtilizationPercent,
         double cpuUtilizationPercent,
-        IoUsageStats ioUsageStats
+        IoUsageStats ioUsageStats,
+        double nativeMemoryUtilization
     ) {
         nodeIdToResourceUsageStats.compute(nodeId, (id, resourceUsageStats) -> {
             if (resourceUsageStats == null) {
-                return new NodeResourceUsageStats(nodeId, timestamp, memoryUtilizationPercent, cpuUtilizationPercent, ioUsageStats);
+                return new NodeResourceUsageStats(
+                    nodeId,
+                    timestamp,
+                    memoryUtilizationPercent,
+                    cpuUtilizationPercent,
+                    ioUsageStats,
+                    nativeMemoryUtilization
+                );
             } else {
                 resourceUsageStats.cpuUtilizationPercent = cpuUtilizationPercent;
                 resourceUsageStats.memoryUtilizationPercent = memoryUtilizationPercent;
                 resourceUsageStats.setIoUsageStats(ioUsageStats);
+                resourceUsageStats.nativeMemoryUtilization = nativeMemoryUtilization;
                 resourceUsageStats.timestamp = timestamp;
                 return resourceUsageStats;
             }
@@ -127,12 +144,27 @@ public class ResourceUsageCollectorService extends AbstractLifecycleComponent im
      */
     private void collectLocalNodeResourceUsageStats() {
         if (nodeResourceUsageTracker.isReady() && clusterService.isStateInitialised()) {
+            double nativeMemoryUtilization = 0.0;
+            for (BackendStatsProvider provider : backendStatsProviders) {
+                if ("datafusion".equals(provider.name())) {
+                    PluginStats pluginStats = provider.getBackendStats();
+                    if (pluginStats instanceof DataFusionStats) {
+                        DataFusionStats dfStats = (DataFusionStats) pluginStats;
+                        ResourceUsageStats resourceUsageStats = dfStats.getResourceUsageStats();
+                        if (resourceUsageStats != null) {
+                            nativeMemoryUtilization = resourceUsageStats.getNativeMemoryUtilization();
+                        }
+                    }
+                    break;
+                }
+            }
             collectNodeResourceUsageStats(
                 clusterService.state().nodes().getLocalNodeId(),
                 System.currentTimeMillis(),
                 nodeResourceUsageTracker.getMemoryUtilizationPercent(),
                 nodeResourceUsageTracker.getCpuUtilizationPercent(),
-                nodeResourceUsageTracker.getIoUsageStats()
+                nodeResourceUsageTracker.getIoUsageStats(),
+                nativeMemoryUtilization
             );
         }
     }

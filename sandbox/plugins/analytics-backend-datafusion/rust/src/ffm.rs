@@ -170,7 +170,7 @@ pub unsafe extern "C" fn df_sql_to_substrait(
 
 /// Collects all native executor metrics into a caller-provided byte buffer.
 ///
-/// The buffer must have capacity for at least `size_of::<DfStatsBuffer>()` bytes (224).
+/// The buffer must have capacity for at least `size_of::<DfStatsBuffer>()` bytes (232).
 /// Returns 0 on success.
 #[ffm_safe]
 #[no_mangle]
@@ -211,6 +211,7 @@ pub unsafe extern "C" fn df_stats(out_ptr: *mut u8, out_cap: i64) -> i64 {
         stream_next: pack_task_monitor(stream_next_monitor()),
         fetch_phase: pack_task_monitor(fetch_phase_monitor()),
         segment_stats: pack_task_monitor(segment_stats_monitor()),
+        native_memory_utilization: 0,
     };
 
     // Copy struct bytes to caller buffer

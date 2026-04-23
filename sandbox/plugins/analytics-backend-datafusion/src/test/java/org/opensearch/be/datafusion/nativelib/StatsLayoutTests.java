@@ -21,10 +21,10 @@ import java.lang.foreign.ValueLayout;
  */
 public class StatsLayoutTests extends OpenSearchTestCase {
 
-    /** 7.1: Layout byte size must be 224 (28 × 8). */
+    /** 7.1: Layout byte size must be 232 (29 × 8). */
     public void testLayoutByteSize() {
-        assertEquals(224L, StatsLayout.LAYOUT.byteSize());
-        assertEquals(28 * Long.BYTES, (int) StatsLayout.LAYOUT.byteSize());
+        assertEquals(232L, StatsLayout.LAYOUT.byteSize());
+        assertEquals(29 * Long.BYTES, (int) StatsLayout.LAYOUT.byteSize());
     }
 
     /** 7.2: readRuntimeMetrics decodes 8 known values from io_runtime group. */
@@ -102,6 +102,28 @@ public class StatsLayoutTests extends OpenSearchTestCase {
             assertNotNull(cpuRuntime);
             assertEquals(5L, cpuRuntime.workersCount);
             assertEquals(90L, cpuRuntime.totalPollsCount);
+        }
+    }
+
+    /** 7.6: readResourceUsage decodes native_memory_utilization from resource_usage group. */
+    public void testReadResourceUsageFromSegment() {
+        try (var arena = Arena.ofConfined()) {
+            var seg = arena.allocate(StatsLayout.LAYOUT);
+            // native_memory_utilization is at index 28 (after 28 longs of existing fields)
+            seg.setAtIndex(ValueLayout.JAVA_LONG, 28, 42L);
+
+            var ru = StatsLayout.readResourceUsage(seg);
+            assertEquals(42.0, ru.getNativeMemoryUtilization(), 0.0);
+        }
+    }
+
+    /** 7.7: readResourceUsage returns 0.0 when native_memory_utilization is zero. */
+    public void testReadResourceUsageZero() {
+        try (var arena = Arena.ofConfined()) {
+            var seg = arena.allocate(StatsLayout.LAYOUT);
+            // All zeros by default
+            var ru = StatsLayout.readResourceUsage(seg);
+            assertEquals(0.0, ru.getNativeMemoryUtilization(), 0.0);
         }
     }
 }

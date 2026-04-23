@@ -15,6 +15,7 @@ import org.opensearch.plugin.stats.DataFusionStats;
 import org.opensearch.plugin.stats.NativeExecutorsStats;
 import org.opensearch.plugin.stats.NativeExecutorsStats.RuntimeMetrics;
 import org.opensearch.plugin.stats.NativeExecutorsStats.TaskMonitorStats;
+import org.opensearch.plugin.stats.ResourceUsageStats;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.io.IOException;
@@ -29,7 +30,7 @@ import java.util.Map;
  */
 public class DataFusionStatsTests extends OpenSearchTestCase {
 
-    /** Build a DataFusionStats with sequential values 1..28 for deterministic field verification. */
+    /** Build a DataFusionStats with sequential values 1..28 and a ResourceUsageStats for deterministic field verification. */
     private static DataFusionStats sequentialStats() {
         RuntimeMetrics io = new RuntimeMetrics(1, 2, 3, 4, 5, 6, 7, 8);
         RuntimeMetrics cpu = new RuntimeMetrics(9, 10, 11, 12, 13, 14, 15, 16);
@@ -38,7 +39,7 @@ public class DataFusionStatsTests extends OpenSearchTestCase {
         taskMonitors.put("stream_next", new TaskMonitorStats(20, 21, 22));
         taskMonitors.put("fetch_phase", new TaskMonitorStats(23, 24, 25));
         taskMonitors.put("segment_stats", new TaskMonitorStats(26, 27, 28));
-        return new DataFusionStats(new NativeExecutorsStats(io, cpu, taskMonitors));
+        return new DataFusionStats(new NativeExecutorsStats(io, cpu, taskMonitors), new ResourceUsageStats(0.0));
     }
 
     private static String toJsonString(DataFusionStats stats) throws IOException {
@@ -207,5 +208,35 @@ public class DataFusionStatsTests extends OpenSearchTestCase {
         assertTrue(monitors.containsKey("stream_next"));
         assertTrue(monitors.containsKey("fetch_phase"));
         assertTrue(monitors.containsKey("segment_stats"));
+    }
+
+    // ---- Test: null ResourceUsageStats omits resource_usage section (Req 3.1) ----
+
+    public void testNullResourceUsageStatsOmitsSection() throws IOException {
+        RuntimeMetrics io = new RuntimeMetrics(1, 2, 3, 4, 5, 6, 7, 8);
+        Map<String, TaskMonitorStats> taskMonitors = new LinkedHashMap<>();
+        taskMonitors.put("query_execution", new TaskMonitorStats(17, 18, 19));
+        taskMonitors.put("stream_next", new TaskMonitorStats(20, 21, 22));
+        taskMonitors.put("fetch_phase", new TaskMonitorStats(23, 24, 25));
+        taskMonitors.put("segment_stats", new TaskMonitorStats(26, 27, 28));
+
+        DataFusionStats stats = new DataFusionStats(new NativeExecutorsStats(io, null, taskMonitors), null);
+        assertNull(stats.getResourceUsageStats());
+
+        String json = toJsonString(stats);
+        assertFalse("resource_usage should be omitted when ResourceUsageStats is null", json.contains("resource_usage"));
+        assertTrue("native_executors should still be present", json.contains("native_executors"));
+    }
+
+    // ---- Test: non-null ResourceUsageStats includes resource_usage section (Req 3.4) ----
+
+    public void testNonNullResourceUsageStatsIncludesSection() throws IOException {
+        DataFusionStats stats = sequentialStats();
+        assertNotNull(stats.getResourceUsageStats());
+
+        String json = toJsonString(stats);
+        assertTrue("resource_usage should be present", json.contains("\"resource_usage\""));
+        assertTrue("native_memory_utilization should be present", json.contains("\"native_memory_utilization\""));
+        assertTrue("native_executors should still be present", json.contains("\"native_executors\""));
     }
 }

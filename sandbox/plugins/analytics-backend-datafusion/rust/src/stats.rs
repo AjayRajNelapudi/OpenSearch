@@ -5,7 +5,7 @@
 //! Stats packing helpers for the FFM `df_stats()` function.
 //!
 //! Packs Tokio runtime metrics and per-operation task monitor metrics
-//! into a `#[repr(C)]` `DfStatsBuffer` struct (224 bytes) for efficient
+//! into a `#[repr(C)]` `DfStatsBuffer` struct (232 bytes) for efficient
 //! transfer across the FFM boundary.
 //!
 //! ## Struct layout
@@ -18,6 +18,7 @@
 //! | `stream_next`     | `TaskMonitorRepr`   | 3 × i64 |
 //! | `fetch_phase`     | `TaskMonitorRepr`   | 3 × i64 |
 //! | `segment_stats`   | `TaskMonitorRepr`   | 3 × i64 |
+//! | `native_memory_utilization` | `i64`       | 1 × i64 |
 
 use tokio::runtime::Handle;
 use tokio_metrics::{RuntimeMonitor, TaskMonitor};
@@ -64,16 +65,17 @@ pub struct DfStatsBuffer {
     pub stream_next: TaskMonitorRepr,
     pub fetch_phase: TaskMonitorRepr,
     pub segment_stats: TaskMonitorRepr,
+    pub native_memory_utilization: i64,
 }
 
 const _: () = assert!(std::mem::size_of::<RuntimeMetricsRepr>() == 8 * 8);
 const _: () = assert!(std::mem::size_of::<TaskMonitorRepr>() == 3 * 8);
-const _: () = assert!(std::mem::size_of::<DfStatsBuffer>() == 28 * 8);
+const _: () = assert!(std::mem::size_of::<DfStatsBuffer>() == 29 * 8);
 
 pub mod layout {
     use super::*;
     pub const BUFFER_BYTE_SIZE: usize = std::mem::size_of::<DfStatsBuffer>();
-    const _: () = assert!(BUFFER_BYTE_SIZE == 224);
+    const _: () = assert!(BUFFER_BYTE_SIZE == 232);
 }
 
 /// Snapshot a `RuntimeMonitor` and return a populated `RuntimeMetricsRepr`.
@@ -204,9 +206,11 @@ mod tests {
             stream_next: pack_task_monitor(stream_next_monitor()),
             fetch_phase: pack_task_monitor(fetch_phase_monitor()),
             segment_stats: pack_task_monitor(segment_stats_monitor()),
+            native_memory_utilization: 0,
         };
 
-        assert_eq!(layout::BUFFER_BYTE_SIZE, 224);
+        assert_eq!(layout::BUFFER_BYTE_SIZE, 232);
+        assert_eq!(buf.native_memory_utilization, 0, "native_memory_utilization should be 0 after packing");
         assert!(buf.io_runtime.workers_count > 0, "IO runtime workers_count should be > 0, got {}", buf.io_runtime.workers_count);
 
         if mgr.cpu_monitor.is_some() {
@@ -220,9 +224,9 @@ mod tests {
     #[test]
     fn test_df_stats_buffer_too_small() {
         // Verify that the buffer size assertion holds
-        assert_eq!(std::mem::size_of::<DfStatsBuffer>(), 224);
-        assert_eq!(layout::BUFFER_BYTE_SIZE, 224);
-        // A buffer smaller than 224 bytes should be rejected by df_stats.
+        assert_eq!(std::mem::size_of::<DfStatsBuffer>(), 232);
+        assert_eq!(layout::BUFFER_BYTE_SIZE, 232);
+        // A buffer smaller than 232 bytes should be rejected by df_stats.
         // We can't call df_stats directly without a runtime manager,
         // but we verify the constant is correct.
         assert!(layout::BUFFER_BYTE_SIZE > 0);

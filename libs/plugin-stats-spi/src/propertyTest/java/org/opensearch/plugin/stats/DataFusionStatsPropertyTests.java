@@ -40,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Tag: Feature: plugin-stats-spi-lib, Property 1: DataFusionStats Writeable round-trip
  * <p>Tag: Feature: plugin-stats-spi-lib, Property 2: DataFusionStats toXContent determinism
+ * <p>Tag: Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats
  */
 public class DataFusionStatsPropertyTests {
 
@@ -107,6 +108,59 @@ public class DataFusionStatsPropertyTests {
     @Provide
     Arbitrary<DataFusionStats> dataFusionStatsNullExecutors() {
         return Arbitraries.just(new DataFusionStats((NativeExecutorsStats) null));
+    }
+
+    // ---- Arbitraries for ResourceUsageStats ----
+
+    @Provide
+    Arbitrary<ResourceUsageStats> resourceUsageStats() {
+        return Arbitraries.doubles().between(-Double.MAX_VALUE, Double.MAX_VALUE)
+            .edgeCases(config -> config.add(0.0, -0.0, 1.0, -1.0, Double.MIN_VALUE, Double.MAX_VALUE))
+            .map(ResourceUsageStats::new);
+    }
+
+    /** NativeExecutorsStats with random IO runtime, optional CPU runtime, and 4 task monitors. */
+    @Provide
+    Arbitrary<NativeExecutorsStats> anyNativeExecutorsStats() {
+        Arbitrary<Boolean> hasCpu = Arbitraries.of(true, false);
+        return Combinators.combine(
+            runtimeMetrics(),
+            runtimeMetrics(),
+            hasCpu,
+            taskMonitorStats(),
+            taskMonitorStats(),
+            taskMonitorStats(),
+            taskMonitorStats()
+        ).as((io, cpu, cpuPresent, qe, sn, fp, ss) ->
+            new NativeExecutorsStats(io, cpuPresent ? cpu : null, buildMonitorMap(qe, sn, fp, ss))
+        );
+    }
+
+    /** DataFusionStats with random NativeExecutorsStats and non-null ResourceUsageStats. */
+    @Provide
+    Arbitrary<DataFusionStats> dataFusionStatsWithResourceUsage() {
+        return Combinators.combine(anyNativeExecutorsStats(), resourceUsageStats())
+            .as(DataFusionStats::new);
+    }
+
+    /** DataFusionStats with random NativeExecutorsStats and null ResourceUsageStats. */
+    @Provide
+    Arbitrary<DataFusionStats> dataFusionStatsWithNullResourceUsage() {
+        return anyNativeExecutorsStats().map(nes -> new DataFusionStats(nes, null));
+    }
+
+    /** DataFusionStats with null NativeExecutorsStats and non-null ResourceUsageStats. */
+    @Provide
+    Arbitrary<DataFusionStats> dataFusionStatsNullExecutorsWithResourceUsage() {
+        return resourceUsageStats().map(rus -> new DataFusionStats(null, rus));
+    }
+
+    /** DataFusionStats with optional NativeExecutorsStats and optional ResourceUsageStats. */
+    @Provide
+    Arbitrary<DataFusionStats> dataFusionStatsOptionalBoth() {
+        Arbitrary<NativeExecutorsStats> optNes = anyNativeExecutorsStats().injectNull(0.3);
+        Arbitrary<ResourceUsageStats> optRus = resourceUsageStats().injectNull(0.3);
+        return Combinators.combine(optNes, optRus).as(DataFusionStats::new);
     }
 
     // ---- Property 1: DataFusionStats Writeable serialization round-trip ----
@@ -207,5 +261,74 @@ public class DataFusionStatsPropertyTests {
         stats.toXContent(builder, ToXContent.EMPTY_PARAMS);
         builder.endObject();
         return BytesReference.toBytes(BytesReference.bytes(builder));
+    }
+
+    // ---- Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats ----
+
+    /**
+     * For any DataFusionStats with non-null ResourceUsageStats, serialization round-trip
+     * preserves the ResourceUsageStats field.
+     *
+     * <p>Validates: Requirements 3.2, 3.3
+     */
+    @Property(tries = 100)
+    @Tag("Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats")
+    void roundTripPreservesResourceUsageStats(@ForAll("dataFusionStatsWithResourceUsage") DataFusionStats original) throws IOException {
+        // Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats
+        DataFusionStats deserialized = writeableRoundTrip(original);
+        assertEquals(original, deserialized, "Round-trip must preserve DataFusionStats with ResourceUsageStats");
+        assertEquals(
+            original.getResourceUsageStats(),
+            deserialized.getResourceUsageStats(),
+            "Round-trip must preserve ResourceUsageStats field"
+        );
+    }
+
+    /**
+     * For any DataFusionStats with null ResourceUsageStats, serialization round-trip
+     * preserves the null.
+     *
+     * <p>Validates: Requirements 3.2, 3.3
+     */
+    @Property(tries = 100)
+    @Tag("Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats")
+    void roundTripPreservesNullResourceUsageStats(@ForAll("dataFusionStatsWithNullResourceUsage") DataFusionStats original) throws IOException {
+        // Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats
+        DataFusionStats deserialized = writeableRoundTrip(original);
+        assertEquals(original, deserialized, "Round-trip must preserve DataFusionStats with null ResourceUsageStats");
+        assertEquals(null, deserialized.getResourceUsageStats(), "ResourceUsageStats must remain null after round-trip");
+    }
+
+    /**
+     * For any DataFusionStats with null NativeExecutorsStats and non-null ResourceUsageStats,
+     * serialization round-trip preserves both fields.
+     *
+     * <p>Validates: Requirements 3.2, 3.3
+     */
+    @Property(tries = 100)
+    @Tag("Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats")
+    void roundTripPreservesResourceUsageWithNullExecutors(@ForAll("dataFusionStatsNullExecutorsWithResourceUsage") DataFusionStats original) throws IOException {
+        // Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats
+        DataFusionStats deserialized = writeableRoundTrip(original);
+        assertEquals(original, deserialized, "Round-trip must preserve DataFusionStats with null executors and non-null ResourceUsageStats");
+        assertEquals(
+            original.getResourceUsageStats(),
+            deserialized.getResourceUsageStats(),
+            "ResourceUsageStats must be preserved when NativeExecutorsStats is null"
+        );
+    }
+
+    /**
+     * For any DataFusionStats with optional NativeExecutorsStats and optional ResourceUsageStats,
+     * serialization round-trip preserves equality.
+     *
+     * <p>Validates: Requirements 3.2, 3.3
+     */
+    @Property(tries = 100)
+    @Tag("Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats")
+    void roundTripPreservesOptionalBothFields(@ForAll("dataFusionStatsOptionalBoth") DataFusionStats original) throws IOException {
+        // Feature: native-memory-utilization, Property 2: DataFusionStats serialization round-trip preserves ResourceUsageStats
+        DataFusionStats deserialized = writeableRoundTrip(original);
+        assertEquals(original, deserialized, "Round-trip must preserve DataFusionStats with optional NativeExecutorsStats and ResourceUsageStats");
     }
 }
