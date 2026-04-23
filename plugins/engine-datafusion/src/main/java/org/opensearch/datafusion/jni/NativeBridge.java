@@ -32,13 +32,19 @@ public final class NativeBridge {
 
     // Tokio runtime
     // Initialize tokio runtime manager once on startup
-    public static native void initTokioRuntimeManager(int cpuThreads);
+    public static native void initTokioRuntimeManager(int cpuThreads, int executionMode);
+
+    // Backward-compatible overload defaulting to mode=1 (spawn)
+    public static void initTokioRuntimeManager(int cpuThreads) {
+        initTokioRuntimeManager(cpuThreads, 1);
+    }
+
     // Shutdown tokio runtime manager on datafusion service
     public static native void shutdownTokioRuntimeManager();
 
     // Query execution
     public static native void executeQueryPhaseAsync(long readerPtr, String tableName, byte[] plan, boolean isQueryPlanExplainEnabled, int partitionCount, long runtimePtr, ActionListener<Long> listener);
-    public static native long executeFetchPhase(long readerPtr, long[] rowIds, String[] includeFields, String[] excludeFields, long runtimePtr);
+    public static native void executeFetchPhase(long readerPtr, long[] rowIds, String[] includeFields, String[] excludeFields, long runtimePtr, ActionListener<Long> listener);
 
     // File Stats
     public static native void fetchSegmentStats(long readerPtr, ActionListener<Map<String, FileStats>> listener);

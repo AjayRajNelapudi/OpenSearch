@@ -8,6 +8,8 @@
 
 package org.opensearch.datafusion.core;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
 
@@ -23,6 +25,8 @@ import org.opensearch.datafusion.search.cache.CacheUtils;
  * Manages the lifecycle of native DataFusion runtime (includes memory pool and Tokio runtime).
  */
 public final class DataFusionRuntimeEnv implements AutoCloseable {
+
+    private static final Logger logger = LogManager.getLogger(DataFusionRuntimeEnv.class);
 
     private final GlobalRuntimeHandle runtimeHandle;
 
@@ -55,7 +59,8 @@ public final class DataFusionRuntimeEnv implements AutoCloseable {
         long memoryLimit = clusterService.getClusterSettings().get(DATAFUSION_MEMORY_POOL_CONFIGURATION).getBytes();
         long spillLimit = clusterService.getClusterSettings().get(DATAFUSION_SPILL_MEMORY_LIMIT_CONFIGURATION).getBytes();
         long cacheManagerConfigPtr = CacheUtils.createCacheConfig(clusterService.getClusterSettings());
-        NativeBridge.initTokioRuntimeManager(Runtime.getRuntime().availableProcessors());
+        int executionMode = parseExecutionMode();
+        NativeBridge.initTokioRuntimeManager(Runtime.getRuntime().availableProcessors(), executionMode);
         this.runtimeHandle = new GlobalRuntimeHandle(memoryLimit, cacheManagerConfigPtr, spill_dir, spillLimit);
         System.out.println("Runtime : " + this.runtimeHandle);
         this.cacheManager = new CacheManager(this.runtimeHandle);
@@ -71,6 +76,28 @@ public final class DataFusionRuntimeEnv implements AutoCloseable {
 
     public CacheManager getCacheManager() {
         return cacheManager;
+    }
+
+    /**
+     * Parses the execution mode from the JVM system property {@code datafusion.execution.mode}.
+     * Valid values: 0 (block_on), 1 (spawn), 2 (hybrid). Defaults to 1 (spawn) if unset or invalid.
+     */
+    static int parseExecutionMode() {
+        String prop = System.getProperty("datafusion.execution.mode");
+        if (prop == null || prop.isEmpty()) {
+            return 1; // default: spawn
+        }
+        try {
+            int mode = Integer.parseInt(prop.trim());
+            if (mode < 0 || mode > 2) {
+                logger.warn("Invalid datafusion.execution.mode={}, defaulting to 1 (spawn)", mode);
+                return 1;
+            }
+            return mode;
+        } catch (NumberFormatException e) {
+            logger.warn("Non-integer datafusion.execution.mode='{}', defaulting to 1 (spawn)", prop);
+            return 1;
+        }
     }
 
     @Override

@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, RecordBatchStream> {
     private final String source;
@@ -47,7 +48,26 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
             String[] includeFields = Objects.isNull(datafusionQuery.getIncludeFields()) ? new String[]{} : datafusionQuery.getIncludeFields().toArray(String[]::new);
             String[] excludeFields = Objects.isNull(datafusionQuery.getExcludeFields()) ? new String[]{} : datafusionQuery.getExcludeFields().toArray(String[]::new);
 
-            return NativeBridge.executeFetchPhase(reader.getReaderPtr(), row_ids, includeFields, excludeFields, runtimePtr);
+            CompletableFuture<Long> future = new CompletableFuture<>();
+            NativeBridge.executeFetchPhase(reader.getReaderPtr(), row_ids, includeFields, excludeFields, runtimePtr, new ActionListener<Long>() {
+                @Override
+                public void onResponse(Long streamPointer) {
+                    future.complete(streamPointer);
+                }
+
+                @Override
+                public void onFailure(Exception e) {
+                    future.completeExceptionally(e);
+                }
+            });
+            try {
+                return future.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted waiting for executeFetchPhase", e);
+            } catch (ExecutionException e) {
+                throw new RuntimeException("executeFetchPhase failed", e.getCause());
+            }
         }
         throw new RuntimeException("Can be only called for fetch phase");
     }

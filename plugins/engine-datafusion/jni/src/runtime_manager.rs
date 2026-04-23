@@ -3,10 +3,48 @@ use crate::io::register_io_runtime;
 use vectorized_exec_spi::log_info;
 use crate::metrics_collector::MetricsCollector;
 use log::info;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use datafusion::error::DataFusionError;
 use tokio::runtime::{Builder, Handle, Runtime};
+
+// ---------------------------------------------------------------------------
+// Execution mode: controls how JNI entry points dispatch work to tokio.
+// ---------------------------------------------------------------------------
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    BlockOn = 0,
+    Spawn  = 1,
+    Hybrid = 2,
+}
+
+impl ExecutionMode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::BlockOn,
+            1 => Self::Spawn,
+            2 => Self::Hybrid,
+            _ => {
+                log_info!("Unknown execution mode {}, defaulting to Spawn", v);
+                Self::Spawn
+            }
+        }
+    }
+}
+
+/// Global execution mode, set once during initTokioRuntimeManager.
+static EXECUTION_MODE: AtomicU8 = AtomicU8::new(1); // default: Spawn
+
+pub fn set_execution_mode(mode: ExecutionMode) {
+    EXECUTION_MODE.store(mode as u8, Ordering::Release);
+}
+
+pub fn get_execution_mode() -> ExecutionMode {
+    ExecutionMode::from_u8(EXECUTION_MODE.load(Ordering::Acquire))
+}
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {

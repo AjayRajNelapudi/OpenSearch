@@ -81,7 +81,7 @@ use once_cell::sync::Lazy;
 use tokio_metrics::TaskMonitor;
 use crate::cross_rt_stream::CrossRtStream;
 use crate::memory::{Monitor, MonitoredMemoryPool};
-use crate::runtime_manager::RuntimeManager;
+use crate::runtime_manager::{ExecutionMode, RuntimeManager, get_execution_mode, set_execution_mode};
 
 mod statistics_cache;
 mod eviction_policy;
@@ -196,6 +196,49 @@ where
     });
 }
 
+/// Block the calling thread on `runtime` until `task` completes, then deliver
+/// the result via ActionListener.
+///
+/// Mirrors `spawn_jni_task` but uses `runtime.block_on()` instead of `spawn()`.
+/// The calling Java thread blocks until the future completes. The entire call is
+/// wrapped in `catch_unwind` for panic safety — any panic is converted to a
+/// `DataFusionError` and surfaced to the Java caller via `listener_ref`.
+///
+/// Because we are already on the Java thread, `with_jni_env` reuses the
+/// existing JNI attachment (no extra attach needed).
+fn block_on_jni_task<Fut, T, FOk>(
+    runtime: &tokio::runtime::Handle,
+    task_name: &'static str,
+    listener_ref: GlobalRef,
+    task: Fut,
+    on_ok: FOk,
+)
+where
+    Fut: Future<Output = Result<T, DataFusionError>> + Send + 'static,
+    T: Send + 'static,
+    FOk: FnOnce(&mut JNIEnv, &GlobalRef, T) + Send + 'static,
+{
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.block_on(task)
+    }))
+    .unwrap_or_else(|panic| {
+        let msg = panic_message(&panic);
+        log_error!("{} panicked: {}", task_name, msg);
+        Err(DataFusionError::Execution(format!(
+            "{} panicked: {}",
+            task_name, msg
+        )))
+    });
+
+    with_jni_env(|env| match result {
+        Ok(value) => on_ok(env, &listener_ref, value),
+        Err(e) => {
+            log_error!("{} failed: {}", task_name, e);
+            set_action_listener_error_global(env, &listener_ref, &e);
+        }
+    });
+}
+
 /// Helper: TaskMonitor → `[i64; 3]` flat array (from cumulative metrics)
 fn task_monitor_to_longs(monitor: &TaskMonitor) -> [i64; metrics_layout::TASK_MONITOR_SIZE] {
     let m = monitor.cumulative();
@@ -283,7 +326,13 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_initTokio
     env: JNIEnv,
     _class: JClass,
     cpu_threads: jint,
+    execution_mode: jint,
 ) {
+    // Store execution mode globally before any other initialization
+    let mode = ExecutionMode::from_u8(execution_mode as u8);
+    set_execution_mode(mode);
+    log_info!("Execution mode set to {:?} ({})", mode, execution_mode);
+
     // Initialize JavaVM for async callbacks from Tokio worker threads
     // This is needed so worker threads can attach to JVM and call ActionListener methods
     JAVA_VM.get_or_init(|| {
@@ -291,7 +340,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_initTokio
     });
 
     TOKIO_RUNTIME_MANAGER.get_or_init(|| {
-        log_info!("Runtime manager initialized with {} CPU threads", cpu_threads);
+        log_info!("Runtime manager initialized with {} CPU threads, mode={:?}", cpu_threads, mode);
         let manager = Arc::new(RuntimeManager::new(cpu_threads as usize));
 
         manager
@@ -713,22 +762,64 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     let table_path = shard_view.table_path();
     let files_meta = shard_view.files_metadata();
 
-    spawn_jni_task(
-        &io_runtime,
-        "executeQueryPhaseAsync",
-        listener_ref,
-        QUERY_EXECUTION_MONITOR.instrument(query_executor::execute_query_with_cross_rt_stream(
-            table_path,
-            files_meta,
-            table_name,
-            plan_bytes_vec,
-            is_query_plan_explain_enabled,
-            target_partitions,
-            runtime,
-            cpu_executor,
-        )),
-        |env, listener_ref, stream_pointer| set_action_listener_ok_global(env, listener_ref, stream_pointer),
-    );
+    let mode = get_execution_mode();
+
+    match mode {
+        ExecutionMode::BlockOn => {
+            block_on_jni_task(
+                &io_runtime,
+                "executeQueryPhaseAsync",
+                listener_ref,
+                QUERY_EXECUTION_MONITOR.instrument(query_executor::execute_query_with_cross_rt_stream(
+                    table_path,
+                    files_meta,
+                    table_name,
+                    plan_bytes_vec,
+                    is_query_plan_explain_enabled,
+                    target_partitions,
+                    runtime,
+                    cpu_executor,
+                )),
+                |env, listener_ref, stream_pointer| set_action_listener_ok_global(env, listener_ref, stream_pointer),
+            );
+        }
+        ExecutionMode::Spawn => {
+            spawn_jni_task(
+                &io_runtime,
+                "executeQueryPhaseAsync",
+                listener_ref,
+                QUERY_EXECUTION_MONITOR.instrument(query_executor::execute_query_with_cross_rt_stream(
+                    table_path,
+                    files_meta,
+                    table_name,
+                    plan_bytes_vec,
+                    is_query_plan_explain_enabled,
+                    target_partitions,
+                    runtime,
+                    cpu_executor,
+                )),
+                |env, listener_ref, stream_pointer| set_action_listener_ok_global(env, listener_ref, stream_pointer),
+            );
+        }
+        ExecutionMode::Hybrid => {
+            block_on_jni_task(
+                &io_runtime,
+                "executeQueryPhaseAsync",
+                listener_ref,
+                QUERY_EXECUTION_MONITOR.instrument(query_executor::execute_query_hybrid(
+                    table_path,
+                    files_meta,
+                    table_name,
+                    plan_bytes_vec,
+                    is_query_plan_explain_enabled,
+                    target_partitions,
+                    runtime,
+                    cpu_executor,
+                )),
+                |env, listener_ref, stream_pointer| set_action_listener_ok_global(env, listener_ref, stream_pointer),
+            );
+        }
+    }
 }
 
 #[no_mangle]
@@ -805,38 +896,77 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamNex
 
     let stream_ptr = stream;
     let io_runtime = manager.io_runtime.clone();
+    let cpu_executor = manager.cpu_executor();
 
-    // Ensure stream_ptr lifetime is guaranteed beyond the spawn boundary
-    // (e.g., wrap in Arc<Mutex<...>> or ensure sequential access contract)
-    spawn_jni_task(
-        &io_runtime,
-        "streamNext",
-        listener_ref,
-        STREAM_NEXT_MONITOR.instrument(async move {
-            let stream = unsafe { &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
-            // Poll the stream with monitoring
-            let result = stream.try_next().await?;
+    let mode = get_execution_mode();
 
-            match result {
-                Some(batch) => {
-                    log_info!("[RUST streamNext] Batch produced: {} rows, {} columns, schema: {:?}",
-                        batch.num_rows(), batch.num_columns(), batch.schema().fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>());
-                    // Convert to FFI
-                    let struct_array: StructArray = batch.into();
-                    let array_data = struct_array.into_data();
-                    let ffi_array = FFI_ArrowArray::new(&array_data);
-                    Ok(Box::into_raw(Box::new(ffi_array)) as jlong)
-                }
-                None => {
-                    log_info!("[RUST streamNext] End of stream reached");
-                    // End of stream
-                    Ok(0)
+    // The stream poll future — shared across all three branches.
+    // `stream_ptr` is a raw pointer so we define a macro-like closure builder
+    // to avoid repeating the async block.
+    macro_rules! stream_poll_future {
+        () => {
+            async move {
+                let stream = unsafe { &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
+                // Poll the stream with monitoring
+                let result = stream.try_next().await?;
+
+                match result {
+                    Some(batch) => {
+                        log_info!("[RUST streamNext] Batch produced: {} rows, {} columns, schema: {:?}",
+                            batch.num_rows(), batch.num_columns(), batch.schema().fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>());
+                        // Convert to FFI
+                        let struct_array: StructArray = batch.into();
+                        let array_data = struct_array.into_data();
+                        let ffi_array = FFI_ArrowArray::new(&array_data);
+                        Ok(Box::into_raw(Box::new(ffi_array)) as jlong)
+                    }
+                    None => {
+                        log_info!("[RUST streamNext] End of stream reached");
+                        // End of stream
+                        Ok(0)
+                    }
                 }
             }
-        }),
-        |env, listener_ref, data_pointer| set_action_listener_ok_global(env, listener_ref, data_pointer),
-    );
-    // Function returns immediately to java - async rust work continues in background
+        };
+    }
+
+    match mode {
+        ExecutionMode::BlockOn => {
+            block_on_jni_task(
+                &io_runtime,
+                "streamNext",
+                listener_ref,
+                STREAM_NEXT_MONITOR.instrument(stream_poll_future!()),
+                |env, listener_ref, data_pointer| set_action_listener_ok_global(env, listener_ref, data_pointer),
+            );
+        }
+        ExecutionMode::Spawn => {
+            spawn_jni_task(
+                &io_runtime,
+                "streamNext",
+                listener_ref,
+                STREAM_NEXT_MONITOR.instrument(stream_poll_future!()),
+                |env, listener_ref, data_pointer| set_action_listener_ok_global(env, listener_ref, data_pointer),
+            );
+        }
+        ExecutionMode::Hybrid => {
+            // Hybrid: stream polling is CPU-bound work, dispatch to cpu_executor.
+            // We spawn on io_runtime but internally delegate to cpu_executor.spawn().
+            spawn_jni_task(
+                &io_runtime,
+                "streamNext",
+                listener_ref,
+                STREAM_NEXT_MONITOR.instrument(async move {
+                    cpu_executor.spawn(stream_poll_future!())
+                        .await
+                        .map_err(|e| DataFusionError::Execution(
+                            format!("streamNext hybrid cpu_executor error: {:?}", e)
+                        ))?
+                }),
+                |env, listener_ref, data_pointer| set_action_listener_ok_global(env, listener_ref, data_pointer),
+            );
+        }
+    }
 }
 
 #[no_mangle]
@@ -880,34 +1010,57 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeFe
     include_fields: JObjectArray,
     exclude_fields: JObjectArray,
     runtime_ptr: jlong,
-    callback: JObject,
-) -> jlong {
+    listener: JObject,
+) {
+    let manager = match TOKIO_RUNTIME_MANAGER.get() {
+        Some(m) => m,
+        None => {
+            log_error!("Runtime manager not initialized");
+            set_action_listener_error(&mut env, listener,
+                                    &DataFusionError::Execution("Runtime manager not initialized".to_string()));
+            return;
+        }
+    };
+
     let shard_view = unsafe { &*(shard_view_ptr as *const ShardView) };
     let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
 
     let table_path = shard_view.table_path();
     let files_metadata = shard_view.files_metadata();
 
-    let include_fields: Vec<String> =
-        parse_string_arr(&mut env, include_fields).expect("Expected list of files");
-    let exclude_fields: Vec<String> =
-        parse_string_arr(&mut env, exclude_fields).expect("Expected list of files");
+    let include_fields: Vec<String> = match parse_string_arr(&mut env, include_fields) {
+        Ok(f) => f,
+        Err(e) => {
+            log_error!("Failed to parse include_fields: {}", e);
+            set_action_listener_error(&mut env, listener,
+                                    &DataFusionError::Execution(format!("Failed to parse include_fields: {}", e)));
+            return;
+        }
+    };
+    let exclude_fields: Vec<String> = match parse_string_arr(&mut env, exclude_fields) {
+        Ok(f) => f,
+        Err(e) => {
+            log_error!("Failed to parse exclude_fields: {}", e);
+            set_action_listener_error(&mut env, listener,
+                                    &DataFusionError::Execution(format!("Failed to parse exclude_fields: {}", e)));
+            return;
+        }
+    };
 
     // Safety checks first
     if values.is_null() {
-        let _ = env.throw_new("java/lang/NullPointerException", "values array is null");
-        return 0;
+        set_action_listener_error(&mut env, listener,
+                                &DataFusionError::Execution("values array is null".to_string()));
+        return;
     }
 
     // Get array length
     let array_length = match env.get_array_length(&values) {
         Ok(len) => len,
         Err(e) => {
-            let _ = env.throw_new(
-                "java/lang/RuntimeException",
-                format!("Failed to get array length: {:?}", e),
-            );
-            return 0;
+            set_action_listener_error(&mut env, listener,
+                                    &DataFusionError::Execution(format!("Failed to get array length: {:?}", e)));
+            return;
         }
     };
 
@@ -920,47 +1073,81 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeFe
             log_debug!("Received array: {:?}", row_ids);
         }
         Err(e) => {
-            let _ = env.throw_new(
-                "java/lang/RuntimeException",
-                format!("Failed to get array data: {:?}", e),
-            );
-            return 0;
+            set_action_listener_error(&mut env, listener,
+                                    &DataFusionError::Execution(format!("Failed to get array data: {:?}", e)));
+            return;
         }
     }
 
-    let manager = match TOKIO_RUNTIME_MANAGER.get() {
-        Some(m) => m,
-        None => {
-            log_error!("Runtime manager not initialized");
-            set_action_listener_error(&mut env, callback,
-                                    &DataFusionError::Execution("Runtime manager not initialized".to_string()));
-            return 0;
+    // Convert listener to GlobalRef (thread-safe)
+    let listener_ref = match env.new_global_ref(&listener) {
+        Ok(r) => r,
+        Err(e) => {
+            log_error!("Failed to create global ref: {}", e);
+            set_action_listener_error(&mut env, listener,
+                                    &DataFusionError::Execution(format!("Failed to create global ref: {}", e)));
+            return;
         }
     };
 
     let io_runtime = manager.io_runtime.clone();
     let cpu_executor = manager.cpu_executor();
 
-    io_runtime.block_on(FETCH_PHASE_MONITOR.instrument(async {
-        match query_executor::execute_fetch_phase(
-            table_path,
-            files_metadata,
-            row_ids,
-            include_fields,
-            exclude_fields,
-            runtime,
-            cpu_executor,
-        ).await {
-            Ok(stream_ptr) => stream_ptr,
-            Err(e) => {
-                let _ = env.throw_new(
-                    "java/lang/RuntimeException",
-                    format!("Failed to execute fetch phase: {}", e),
-                );
-                0 // return 0
-            }
+    let mode = get_execution_mode();
+
+    // The fetch phase future — shared across all three branches.
+    macro_rules! fetch_phase_future {
+        () => {
+            query_executor::execute_fetch_phase(
+                table_path.clone(),
+                files_metadata.clone(),
+                row_ids.clone(),
+                include_fields.clone(),
+                exclude_fields.clone(),
+                runtime,
+                cpu_executor.clone(),
+            )
+        };
+    }
+
+    match mode {
+        ExecutionMode::BlockOn => {
+            block_on_jni_task(
+                &io_runtime,
+                "executeFetchPhase",
+                listener_ref,
+                FETCH_PHASE_MONITOR.instrument(fetch_phase_future!()),
+                |env, listener_ref, stream_pointer| set_action_listener_ok_global(env, listener_ref, stream_pointer),
+            );
         }
-    }))
+        ExecutionMode::Spawn => {
+            spawn_jni_task(
+                &io_runtime,
+                "executeFetchPhase",
+                listener_ref,
+                FETCH_PHASE_MONITOR.instrument(fetch_phase_future!()),
+                |env, listener_ref, stream_pointer| set_action_listener_ok_global(env, listener_ref, stream_pointer),
+            );
+        }
+        ExecutionMode::Hybrid => {
+            // Hybrid: IO-bound parquet reads via block_on, CPU-bound projection via cpu_executor
+            block_on_jni_task(
+                &io_runtime,
+                "executeFetchPhase",
+                listener_ref,
+                FETCH_PHASE_MONITOR.instrument(query_executor::execute_fetch_hybrid(
+                    table_path.clone(),
+                    files_metadata.clone(),
+                    row_ids.clone(),
+                    include_fields.clone(),
+                    exclude_fields.clone(),
+                    runtime,
+                    cpu_executor.clone(),
+                )),
+                |env, listener_ref, stream_pointer| set_action_listener_ok_global(env, listener_ref, stream_pointer),
+            );
+        }
+    }
 }
 
 #[no_mangle]

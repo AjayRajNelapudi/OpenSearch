@@ -25,7 +25,11 @@ public interface AnalyticsBackEndPlugin {
     /** Unique engine name (e.g., "lucene", "datafusion"). */
     String name();
 
-    /** JNI boundary for executing serialized plans, or null for engines without native execution. */
+    /**
+     * JNI boundary for executing serialized plans, or null for engines without native execution.
+     * @param engine the composite engine coordinating query execution
+     * @param snapshot the catalog snapshot with current index metadata
+     */
     EngineBridge<?, ?, ?> bridge(CompositeEngine engine, CatalogSnapshot snapshot);
 
     /** Supported functions as a Calcite operator table, or null if the back-end adds no functions. */
@@ -46,7 +50,10 @@ public interface AnalyticsBackEndPlugin {
         );
     }
 
-    /** Returns true if this backend can accept and execute the given opaque predicate payload. */
+    /**
+     * Returns true if this backend can accept and execute the given opaque predicate payload.
+     * @param payload the serialized predicate bytes to evaluate
+     */
     default boolean canAcceptUnresolvedPredicate(byte[] payload) {
         return false;
     }

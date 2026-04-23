@@ -39,11 +39,23 @@ public interface EngineContext {
      */
     SqlOperatorTable operatorTable();
 
-    /** Holder for the global instance set by AnalyticsPlugin during createComponents. */
+    /**
+     * Holder for the global instance set by AnalyticsPlugin during createComponents.
+     * @opensearch.internal
+     */
     class Holder {
         private static volatile EngineContext INSTANCE;
 
+        /**
+         * Sets the global EngineContext instance.
+         * @param ctx the engine context to store
+         */
         public static void set(EngineContext ctx) { INSTANCE = ctx; }
+
+        /**
+         * Returns the global EngineContext instance.
+         * @return the stored engine context, or null if not yet set
+         */
         public static EngineContext get() { return INSTANCE; }
     }
 }

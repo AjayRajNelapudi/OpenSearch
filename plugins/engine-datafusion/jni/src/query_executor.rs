@@ -58,53 +58,20 @@ use crate::DataFusionRuntime;
 use crate::project_row_id_analyzer::ProjectRowIdAnalyzer;
 use crate::absolute_row_id_optimizer::{AbsoluteRowIdOptimizer, ROW_BASE_FIELD_NAME, ROW_ID_FIELD_NAME};
 
-/// Executes a query using DataFusion with cross-runtime streaming capabilities.
-/// This function sets up the complete query execution pipeline including table registration,
-/// plan optimization, and stream creation for efficient data processing across different runtimes.
+/// Prepares a query plan by performing all IO-bound work: session setup, schema inference,
+/// table registration, substrait decoding, logical plan creation, and physical plan optimization.
 ///
-/// # Arguments
-/// * `table_path` - The URL path to the table data source (typically a directory containing Parquet files)
-/// * `files_meta` - Metadata for all files in the table, including row counts and base offsets
-/// * `table_name` - Name to register the table under in the DataFusion context
-/// * `plan_bytes_vec` - Serialized Substrait query plan as bytes
-/// * `is_aggregation_query` - Flag indicating if this is an aggregation query (affects optimization strategy)
-/// * `runtime` - The DataFusion runtime environment containing configuration and caches
-/// * `cpu_executor` - Dedicated executor for CPU-intensive operations
+/// Returns the optimized physical plan, task context, and whether this is an aggregation query.
+/// This helper is used by both `execute_query_with_cross_rt_stream` and `execute_query_hybrid`
+/// to share the IO-bound planning phase.
 ///
-/// # Returns
-/// A pointer (as jlong) to the cross-runtime stream that can be consumed from Java/JNI
-///
-/// # Process Overview
-/// 1. Sets up file caching and runtime environment for optimal performance
-/// 2. Configures session with appropriate settings (batch size, partitions, etc.)
-/// 3. Registers the table with proper schema inference and partition columns
-/// 4. Decodes and processes the Substrait plan, applying necessary transformations
-/// 5. Applies query-specific optimizations (row ID handling for non-aggregation queries)
-/// 6. Creates and returns a cross-runtime stream for result consumption
-/// # Row ID Optimization Strategy (for non-aggregation queries)
-///
-/// The system uses a multi-phase approach to ensure queries return absolute row IDs:
-///
-/// **Phase 1: Logical Plan Analysis (ProjectRowIdAnalyzer)**
-/// - Ensures ___row_id fields are included in TableScan projections
-/// - Propagates ___row_id through Projection nodes in the logical plan
-/// - Works at the logical level before physical plan generation
-///
-/// **Phase 2: Physical Plan Optimization (AbsoluteRowIdOptimizer)**
-/// - Transforms relative row IDs to absolute row IDs at execution time
-/// - Replaces ___row_id expressions with (___row_id + row_base) calculations
-/// - row_base comes from partition columns and represents the file's starting row offset
-///
-/// **Phase 3: Final Projection**
-/// - Creates a top-level projection that only selects ___row_id
-/// - Ensures query results contain only the row identifiers needed for fetch operations
-///
-/// **Why This Approach:**
-/// - Parquet files store relative row IDs (0-based within each file)
-/// - We need absolute row IDs for global row identification across all files
-/// - The row_base partition column provides the offset to convert relative → absolute
-/// - This enables efficient two-phase query execution: filter → fetch
-pub async fn execute_query_with_cross_rt_stream(
+/// # IO-bound operations performed
+/// - File cache setup and runtime environment configuration
+/// - Session configuration (batch size, partitions, etc.)
+/// - Table registration with schema inference and partition columns
+/// - Substrait plan decoding and logical plan creation
+/// - Physical plan creation and optimization (AbsoluteRowIdOptimizer for non-agg queries)
+async fn prepare_query_plan(
     table_path: ListingTableUrl,
     files_meta: Arc<Vec<CustomFileMeta>>,
     table_name: String,
@@ -112,8 +79,7 @@ pub async fn execute_query_with_cross_rt_stream(
     is_query_plan_explain_enabled: bool,
     target_partitions: usize,
     runtime: &DataFusionRuntime,
-    cpu_executor: DedicatedExecutor,
-) -> Result<jlong, DataFusionError> {
+) -> Result<(Arc<dyn ExecutionPlan>, Arc<TaskContext>, bool), DataFusionError> {
     let object_meta: Arc<Vec<ObjectMeta>> = Arc::new(
         files_meta
             .iter()
@@ -234,22 +200,9 @@ pub async fn execute_query_with_cross_rt_stream(
     // only absolute row IDs are returned, which is essential for subsequent fetch operations
     if !is_aggregation_query {
         // Phase 1: ProjectRowIdAnalyzer (Logical Plan Analysis)
-        // This analyzer works at the logical plan level and ensures that:
-        // 1. TableScan nodes include the ___row_id field in their projections
-        // 2. Projection nodes propagate the ___row_id field through the query tree
-        // 3. The ___row_id field is available at every level of the plan for later optimization
         logical_plan = ProjectRowIdAnalyzer.analyze(logical_plan, ctx.state().config_options())?;
 
         // Phase 2: Top-level Projection Restriction
-        // Create a final projection that ONLY selects the ___row_id field
-        // This ensures the query result contains only the row identifiers needed for the fetch phase
-        // The AbsoluteRowIdOptimizer (applied earlier) will later transform these relative IDs
-        // into absolute IDs during physical plan execution.
-        // Creation of final projection is needed since in some case top-level projection is missing
-        // from the plan if final projection schema matches downstream exec schemas, making
-        // projection exec redundant.
-        // OptimizeProjections LogicalPlan optimizer is applied during execution which removes any
-        // additional projection execs are present.
         logical_plan = LogicalPlan::Projection(Projection::try_new(
             vec![col(ROW_ID_FIELD_NAME.to_string())],
             Arc::new(logical_plan),
@@ -266,18 +219,12 @@ pub async fn execute_query_with_cross_rt_stream(
 
     let mut physical_plan = dataframe.clone().create_physical_plan().await?;
 
-    // For non-aggregation queries, we need to return absolute row IDs to identify specific rows
-    // The AbsoluteRowIdOptimizer works at the physical plan level to transform relative row IDs
-    // into absolute ones by adding the partition's row_base offset
+    // For non-aggregation queries, apply AbsoluteRowIdOptimizer to transform
+    // relative row IDs into absolute ones by adding the partition's row_base offset
     if !is_aggregation_query {
-        // AbsoluteRowIdOptimizer: Transforms ___row_id expressions in the physical plan
-        // It finds expressions that reference ___row_id and replaces them with:
-        // ___row_id + row_base (where row_base comes from partition columns)
-        // This converts file-relative row IDs to globally unique absolute row IDs
         physical_plan = AbsoluteRowIdOptimizer.optimize(physical_plan, ctx.state().config_options())
             .expect("Failed to optimize physical plan");
     }
-
 
     if is_query_plan_explain_enabled {
         println!("---- Explain plan ----");
@@ -285,7 +232,49 @@ pub async fn execute_query_with_cross_rt_stream(
         clone_df.show().await?;
     }
 
-    let df_stream = match execute_stream(physical_plan, ctx.task_ctx()) {
+    Ok((physical_plan, ctx.task_ctx(), is_aggregation_query))
+}
+
+/// Executes a query using DataFusion with cross-runtime streaming capabilities.
+/// This function sets up the complete query execution pipeline including table registration,
+/// plan optimization, and stream creation for efficient data processing across different runtimes.
+///
+/// Internally delegates to `prepare_query_plan` for IO-bound planning, then creates
+/// the execution stream and wraps it in a CrossRtStream for CPU-bound consumption.
+///
+/// # Row ID Optimization Strategy (for non-aggregation queries)
+///
+/// The system uses a multi-phase approach to ensure queries return absolute row IDs:
+///
+/// **Phase 1: Logical Plan Analysis (ProjectRowIdAnalyzer)**
+/// - Ensures ___row_id fields are included in TableScan projections
+/// - Propagates ___row_id through Projection nodes in the logical plan
+///
+/// **Phase 2: Physical Plan Optimization (AbsoluteRowIdOptimizer)**
+/// - Transforms relative row IDs to absolute row IDs at execution time
+/// - Replaces ___row_id expressions with (___row_id + row_base) calculations
+///
+/// **Phase 3: Final Projection**
+/// - Creates a top-level projection that only selects ___row_id
+pub async fn execute_query_with_cross_rt_stream(
+    table_path: ListingTableUrl,
+    files_meta: Arc<Vec<CustomFileMeta>>,
+    table_name: String,
+    plan_bytes_vec: Vec<u8>,
+    is_query_plan_explain_enabled: bool,
+    target_partitions: usize,
+    runtime: &DataFusionRuntime,
+    cpu_executor: DedicatedExecutor,
+) -> Result<jlong, DataFusionError> {
+    // Phase 1 (IO-bound): session setup, schema inference, plan creation and optimization
+    let (physical_plan, task_ctx, _is_aggregation_query) =
+        prepare_query_plan(
+            table_path, files_meta, table_name, plan_bytes_vec,
+            is_query_plan_explain_enabled, target_partitions, runtime,
+        ).await?;
+
+    // Phase 2 (CPU-bound): create execution stream and wrap in CrossRtStream
+    let df_stream = match execute_stream(physical_plan, task_ctx) {
         Ok(stream) => stream,
         Err(e) => {
             error!("Failed to create execution stream: {}", e);
@@ -293,6 +282,36 @@ pub async fn execute_query_with_cross_rt_stream(
         }
     };
 
+    Ok(get_cross_rt_stream(cpu_executor, df_stream))
+}
+
+/// Hybrid mode: IO-bound work runs on io_runtime via block_on,
+/// CPU-bound work is dispatched to cpu_executor via spawn.
+///
+/// Phase 1 (IO-bound): Uses `prepare_query_plan` for session setup, schema inference,
+/// parquet metadata reads, substrait decode, and physical plan creation.
+///
+/// Phase 2 (CPU-bound): Creates the execution stream and wraps it in a CrossRtStream
+/// for CPU-bound batch processing on the cpu_executor.
+pub async fn execute_query_hybrid(
+    table_path: ListingTableUrl,
+    files_meta: Arc<Vec<CustomFileMeta>>,
+    table_name: String,
+    plan_bytes_vec: Vec<u8>,
+    is_query_plan_explain_enabled: bool,
+    target_partitions: usize,
+    runtime: &DataFusionRuntime,
+    cpu_executor: DedicatedExecutor,
+) -> Result<jlong, DataFusionError> {
+    // Phase 1 (IO-bound): session setup, schema inference, plan creation
+    let (physical_plan, task_ctx, _is_aggregation_query) =
+        prepare_query_plan(
+            table_path, files_meta, table_name, plan_bytes_vec,
+            is_query_plan_explain_enabled, target_partitions, runtime,
+        ).await?;
+
+    // Phase 2 (CPU-bound): stream execution on cpu_executor
+    let df_stream = execute_stream(physical_plan, task_ctx)?;
     Ok(get_cross_rt_stream(cpu_executor, df_stream))
 }
 
@@ -310,52 +329,20 @@ pub fn get_cross_rt_stream(cpu_executor: DedicatedExecutor, df_stream: SendableR
     Box::into_raw(Box::new(wrapped_stream)) as jlong
 }
 
-/// Executes the fetch phase of a two-phase query execution strategy.
-/// This function takes absolute row IDs (returned from the query phase) and efficiently
-/// retrieves the actual row data using Parquet's row-level access capabilities.
+/// Prepares the fetch plan by performing all IO-bound work: access plan creation,
+/// cache setup, schema inference, file scan configuration, and projection setup.
 ///
-/// # Two-Phase Query Execution Strategy
-///
-/// **Phase 1 (Query):** `execute_query_with_cross_rt_stream`
-/// - Applies filters and conditions to identify matching rows
-/// - Returns only absolute row IDs (___row_id) for matching rows
-/// - Uses optimizers to ensure row IDs are absolute (not file-relative)
-///
-/// **Phase 2 (Fetch):** This function
-/// - Takes the absolute row IDs from phase 1
-/// - Creates optimized Parquet access plans for targeted row retrieval
-/// - Fetches only the requested columns for the identified rows
-/// - Reconstructs absolute row IDs by adding row_base back to relative IDs
-///
-/// # Arguments
-/// * `table_path` - The URL path to the table data source
-/// * `files_metadata` - Metadata for all files including row counts and base offsets
-/// * `row_ids` - Absolute row IDs to fetch (from query phase)
-/// * `include_fields` - Specific fields to include in the result
-/// * `exclude_fields` - Fields to exclude from the result
-/// * `runtime` - The DataFusion runtime environment
-/// * `cpu_executor` - Dedicated executor for CPU-intensive operations
-///
-/// # Returns
-/// A pointer (as jlong) to the cross-runtime stream containing the fetched row data
-///
-/// # Optimization Details
-/// - Uses ParquetAccessPlan for efficient row-group level access
-/// - Skips entire row groups that don't contain target rows
-/// - Uses RowSelector for precise row-level filtering within row groups
-/// - Reconstructs absolute row IDs using row_base + relative_row_id calculation
-pub async fn execute_fetch_phase(
+/// Returns the optimized execution plan and task context, ready for stream execution.
+/// This helper is used by both `execute_fetch_phase` and `execute_fetch_hybrid`.
+async fn prepare_fetch_plan(
     table_path: ListingTableUrl,
     files_metadata: Arc<Vec<CustomFileMeta>>,
     row_ids: Vec<jlong>,
     include_fields: Vec<String>,
     exclude_fields: Vec<String>,
     runtime: &DataFusionRuntime,
-    cpu_executor: DedicatedExecutor,
-) -> Result<jlong, DataFusionError> {
+) -> Result<(Arc<dyn ExecutionPlan>, Arc<TaskContext>), DataFusionError> {
     // Create optimized Parquet access plans for targeted row retrieval
-    // This converts absolute row IDs back to file-relative positions and creates
-    // efficient access patterns for each file's row groups
     let access_plans = create_access_plans(row_ids, files_metadata.clone()).await?;
 
     let object_meta: Arc<Vec<ObjectMeta>> = Arc::new(
@@ -440,7 +427,6 @@ pub async fn execute_fetch_phase(
     }
 
     // Ensure ___row_id is always included in projections for absolute row ID reconstruction
-    // Even if not explicitly requested, we need it to rebuild absolute row IDs
     if(!projections.contains(&ROW_ID_FIELD_NAME.to_string())) {
         projection_index.push(parquet_schema.index_of(ROW_ID_FIELD_NAME).unwrap());
     }
@@ -464,8 +450,71 @@ pub async fn execute_fetch_phase(
         .expect("Failed to create ProjectionExec"));
     let optimized_plan: Arc<dyn ExecutionPlan> = projection_exec.clone();
     let task_ctx = Arc::new(TaskContext::default());
-    let stream = optimized_plan.execute(0, task_ctx)?;
 
+    Ok((optimized_plan, task_ctx))
+}
+
+/// Executes the fetch phase of a two-phase query execution strategy.
+/// This function takes absolute row IDs (returned from the query phase) and efficiently
+/// retrieves the actual row data using Parquet's row-level access capabilities.
+///
+/// Internally delegates to `prepare_fetch_plan` for IO-bound setup, then creates
+/// the execution stream and wraps it in a CrossRtStream.
+///
+/// # Two-Phase Query Execution Strategy
+///
+/// **Phase 1 (Query):** `execute_query_with_cross_rt_stream`
+/// - Applies filters and conditions to identify matching rows
+/// - Returns only absolute row IDs (___row_id) for matching rows
+///
+/// **Phase 2 (Fetch):** This function
+/// - Takes the absolute row IDs from phase 1
+/// - Creates optimized Parquet access plans for targeted row retrieval
+/// - Fetches only the requested columns for the identified rows
+/// - Reconstructs absolute row IDs by adding row_base back to relative IDs
+pub async fn execute_fetch_phase(
+    table_path: ListingTableUrl,
+    files_metadata: Arc<Vec<CustomFileMeta>>,
+    row_ids: Vec<jlong>,
+    include_fields: Vec<String>,
+    exclude_fields: Vec<String>,
+    runtime: &DataFusionRuntime,
+    cpu_executor: DedicatedExecutor,
+) -> Result<jlong, DataFusionError> {
+    // Phase 1 (IO-bound): access plan creation, schema inference, file scan config
+    let (optimized_plan, task_ctx) = prepare_fetch_plan(
+        table_path, files_metadata, row_ids, include_fields, exclude_fields, runtime,
+    ).await?;
+
+    // Phase 2 (CPU-bound): execute stream and wrap in CrossRtStream
+    let stream = optimized_plan.execute(0, task_ctx)?;
+    Ok(get_cross_rt_stream(cpu_executor, stream))
+}
+
+/// Hybrid fetch: IO-bound setup runs on io_runtime via block_on,
+/// CPU-bound projection and row ID reconstruction dispatched to cpu_executor.
+///
+/// Phase 1 (IO-bound): Uses `prepare_fetch_plan` for access plan creation,
+/// parquet metadata reads, schema inference, and file scan configuration.
+///
+/// Phase 2 (CPU-bound): Executes the projection plan and wraps the stream
+/// in a CrossRtStream for CPU-bound batch processing on the cpu_executor.
+pub async fn execute_fetch_hybrid(
+    table_path: ListingTableUrl,
+    files_metadata: Arc<Vec<CustomFileMeta>>,
+    row_ids: Vec<jlong>,
+    include_fields: Vec<String>,
+    exclude_fields: Vec<String>,
+    runtime: &DataFusionRuntime,
+    cpu_executor: DedicatedExecutor,
+) -> Result<jlong, DataFusionError> {
+    // Phase 1 (IO-bound): access plan creation, schema inference, file scan config
+    let (optimized_plan, task_ctx) = prepare_fetch_plan(
+        table_path, files_metadata, row_ids, include_fields, exclude_fields, runtime,
+    ).await?;
+
+    // Phase 2 (CPU-bound): execute projection stream on cpu_executor
+    let stream = optimized_plan.execute(0, task_ctx)?;
     Ok(get_cross_rt_stream(cpu_executor, stream))
 }
 
