@@ -61,8 +61,21 @@ public class DataFusionService extends AbstractLifecycleComponent {
     @Override
     protected void doStart() {
         logger.debug("Starting DataFusion service");
-        NativeBridge.initTokioRuntimeManager(cpuThreads);
-        logger.debug("Tokio runtime manager initialized with {} CPU threads", cpuThreads);
+        int executionMode = parseExecutionMode();
+        NativeBridge.initTokioRuntimeManager(cpuThreads, executionMode);
+        logger.info("Tokio runtime manager initialized with {} CPU threads, execution mode {}", cpuThreads, executionMode);
+
+        // Register async callback if using spawn mode (mode=1)
+        if (executionMode == 1) {
+            try {
+                NativeBridge.registerAsyncCallback();
+                logger.info("Async upcall callback registered for mode=1");
+            } catch (Exception e) {
+                logger.error("Failed to register async callback, falling back to sync mode", e);
+                executionMode = 0; // Fall back to block_on mode
+            }
+        }
+        NativeBridge.setCachedExecutionMode(executionMode);
 
         long ptr = NativeBridge.createGlobalRuntime(memoryPoolLimit, 0L, spillDirectory, spillMemoryLimit);
         this.runtimeHandle = new NativeRuntimeHandle(ptr);
@@ -155,6 +168,25 @@ public class DataFusionService extends AbstractLifecycleComponent {
             handle.close();
             runtimeHandle = null;
             logger.debug("DataFusion native runtime released");
+        }
+    }
+
+    static int parseExecutionMode() {
+        String prop = System.getProperty("datafusion.execution.mode");
+        if (prop == null || prop.isEmpty()) {
+            return 0; // default: block_on (current FFM behavior)
+        }
+        try {
+            int mode = Integer.parseInt(prop.trim());
+            if (mode < 0 || mode > 2) {
+                logger.warn("Invalid datafusion.execution.mode={}, defaulting to 0 (block_on)", mode);
+                return 0;
+            }
+            logger.info("DataFusion execution mode set to {}", mode);
+            return mode;
+        } catch (NumberFormatException e) {
+            logger.warn("Non-integer datafusion.execution.mode='{}', defaulting to 0 (block_on)", prop);
+            return 0;
         }
     }
 

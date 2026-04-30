@@ -8,8 +8,43 @@
 use crate::executor::DedicatedExecutor;
 use crate::io::register_io_runtime;
 use log::info;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::runtime::{Builder, Runtime};
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    BlockOn = 0,
+    Spawn  = 1,
+    Hybrid = 2,
+}
+
+impl ExecutionMode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::BlockOn,
+            1 => Self::Spawn,
+            2 => Self::Hybrid,
+            _ => {
+                log::warn!("Unknown execution mode {}, defaulting to BlockOn", v);
+                Self::BlockOn
+            }
+        }
+    }
+}
+
+/// Global execution mode, set once during df_init_runtime_manager.
+/// Default: BlockOn (0) — preserves current FFM bridge behavior.
+static EXECUTION_MODE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_execution_mode(mode: ExecutionMode) {
+    EXECUTION_MODE.store(mode as u8, Ordering::Release);
+}
+
+pub fn get_execution_mode() -> ExecutionMode {
+    ExecutionMode::from_u8(EXECUTION_MODE.load(Ordering::Acquire))
+}
 
 // RuntimeManager — owns IO runtime + CPU DedicatedExecutor.
 pub struct RuntimeManager {
@@ -19,11 +54,12 @@ pub struct RuntimeManager {
 
 impl RuntimeManager {
     pub fn new(cpu_threads: usize) -> Self {
-        let io_threads = cpu_threads * 2;
+        let thread_count = ((cpu_threads as f64) * 1.5).ceil() as usize;
+        info!("RuntimeManager: cpu_threads={}, thread_count={} (1.5×)", cpu_threads, thread_count);
 
         let io_runtime = Arc::new(
             Builder::new_multi_thread()
-                .worker_threads(io_threads)
+                .worker_threads(thread_count)
                 .thread_name("datafusion-io")
                 .enable_all()
                 .build()
@@ -35,7 +71,7 @@ impl RuntimeManager {
         let io_handle = io_runtime.handle().clone();
         let mut cpu_runtime_builder = Builder::new_multi_thread();
         cpu_runtime_builder
-            .worker_threads(cpu_threads)
+            .worker_threads(thread_count)
             .thread_name("datafusion-cpu")
             .enable_all()
             .on_thread_start(move || {

@@ -51,6 +51,9 @@ public final class NativeBridge {
     private static final MethodHandle STREAM_NEXT;
     private static final MethodHandle STREAM_CLOSE;
     private static final MethodHandle SQL_TO_SUBSTRAIT;
+    private static final MethodHandle REGISTER_ASYNC_CALLBACK;
+    private static final MethodHandle EXECUTE_QUERY_ASYNC;
+    private static final MethodHandle STREAM_NEXT_ASYNC;
 
     static {
         SymbolLookup lib = NativeLibraryLoader.symbolLookup();
@@ -58,7 +61,7 @@ public final class NativeBridge {
 
         INIT_RUNTIME_MANAGER = linker.downcallHandle(
             lib.find("df_init_runtime_manager").orElseThrow(),
-            FunctionDescriptor.ofVoid(ValueLayout.JAVA_INT)
+            FunctionDescriptor.ofVoid(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
         );
 
         SHUTDOWN_RUNTIME_MANAGER = linker.downcallHandle(
@@ -138,14 +141,53 @@ public final class NativeBridge {
                 ValueLayout.ADDRESS
             )
         );
+
+        REGISTER_ASYNC_CALLBACK = linker.downcallHandle(
+            lib.find("df_register_async_callback").orElseThrow(),
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)  // fn_ptr
+        );
+
+        EXECUTE_QUERY_ASYNC = linker.downcallHandle(
+            lib.find("df_execute_query_async").orElseThrow(),
+            FunctionDescriptor.ofVoid(
+                ValueLayout.JAVA_LONG,   // shard_view_ptr
+                ValueLayout.ADDRESS,     // table_name_ptr
+                ValueLayout.JAVA_LONG,   // table_name_len
+                ValueLayout.ADDRESS,     // plan_ptr
+                ValueLayout.JAVA_LONG,   // plan_len
+                ValueLayout.JAVA_LONG,   // runtime_ptr
+                ValueLayout.JAVA_LONG,   // context_id
+                ValueLayout.JAVA_LONG    // listener_id
+            )
+        );
+
+        STREAM_NEXT_ASYNC = linker.downcallHandle(
+            lib.find("df_stream_next_async").orElseThrow(),
+            FunctionDescriptor.ofVoid(
+                ValueLayout.JAVA_LONG,   // stream_ptr
+                ValueLayout.JAVA_LONG    // listener_id
+            )
+        );
+    }
+
+    /** Cached execution mode — read once at init, immutable for process lifetime. */
+    private static volatile int cachedExecutionMode = -1;
+
+    public static void setCachedExecutionMode(int mode) {
+        cachedExecutionMode = mode;
     }
 
     private NativeBridge() {}
 
     // ---- Tokio runtime management (no Arena needed — no string/buffer args) ----
 
+    public static void initTokioRuntimeManager(int cpuThreads, int executionMode) {
+        NativeCall.invokeVoid(INIT_RUNTIME_MANAGER, cpuThreads, executionMode);
+    }
+
+    /** Backward-compatible overload — defaults to mode 0 (block_on). */
     public static void initTokioRuntimeManager(int cpuThreads) {
-        NativeCall.invokeVoid(INIT_RUNTIME_MANAGER, cpuThreads);
+        initTokioRuntimeManager(cpuThreads, 0);
     }
 
     public static void shutdownTokioRuntimeManager() {
@@ -199,6 +241,26 @@ public final class NativeBridge {
         long contextId,
         ActionListener<Long> listener
     ) {
+        int mode = cachedExecutionMode;
+        if (mode == 1) {
+            // Spawn mode: use async upcall path (truly non-blocking)
+            executeQueryAsyncUpcall(readerPtr, tableName, substraitPlan,
+                runtimePtr, contextId, listener);
+        } else {
+            // Mode 0 (block_on) or mode 2 (hybrid): use existing sync path
+            executeQuerySync(readerPtr, tableName, substraitPlan,
+                runtimePtr, contextId, listener);
+        }
+    }
+
+    private static void executeQuerySync(
+        long readerPtr,
+        String tableName,
+        byte[] substraitPlan,
+        long runtimePtr,
+        long contextId,
+        ActionListener<Long> listener
+    ) {
         try {
             NativeHandle.validatePointer(readerPtr, "reader");
             NativeHandle.validatePointer(runtimePtr, "runtime");
@@ -237,6 +299,17 @@ public final class NativeBridge {
     }
 
     public static void streamNext(long runtimePtr, long streamPtr, ActionListener<Long> listener) {
+        int mode = cachedExecutionMode;
+        if (mode == 1) {
+            // Spawn mode: use async upcall path
+            streamNextAsyncUpcall(streamPtr, listener);
+        } else {
+            // Mode 0 or 2: use existing sync path
+            streamNextSync(runtimePtr, streamPtr, listener);
+        }
+    }
+
+    private static void streamNextSync(long runtimePtr, long streamPtr, ActionListener<Long> listener) {
         try {
             NativeHandle.validatePointer(streamPtr, "stream");
             long result = NativeLibraryLoader.checkResult((long) STREAM_NEXT.invokeExact(streamPtr));
@@ -280,4 +353,66 @@ public final class NativeBridge {
     public static void cacheManagerRemoveFiles(long runtimePtr, String[] filePaths) {}
 
     public static void initLogger() {}
+
+    // ---- Async upcall operations (mode=1 only) ----
+
+    /** Registers the async callback bridge. Called once during init. */
+    public static void registerAsyncCallback() {
+        DataFusionCallbackBridge.initialize(REGISTER_ASYNC_CALLBACK);
+    }
+
+    /**
+     * Async query execution via upcall (mode=1 only).
+     * Returns immediately — result delivered via ActionListener callback.
+     */
+    public static void executeQueryAsyncUpcall(
+        long readerPtr,
+        String tableName,
+        byte[] substraitPlan,
+        long runtimePtr,
+        long contextId,
+        ActionListener<Long> listener
+    ) {
+        try {
+            NativeHandle.validatePointer(readerPtr, "reader");
+            NativeHandle.validatePointer(runtimePtr, "runtime");
+        } catch (Exception e) {
+            listener.onFailure(e);
+            return;
+        }
+        long listenerId = DataFusionCallbackBridge.registerListener(listener);
+        try (var call = new NativeCall()) {
+            var table = call.str(tableName);
+            NativeCall.invokeVoid(
+                EXECUTE_QUERY_ASYNC,
+                readerPtr,
+                table.segment(),
+                table.len(),
+                call.bytes(substraitPlan),
+                (long) substraitPlan.length,
+                runtimePtr,
+                contextId,
+                listenerId
+            );
+        }
+        // NativeCall arena closes here — Rust has already copied the data
+    }
+
+    /**
+     * Async stream next via upcall (mode=1 only).
+     * Returns immediately — result delivered via ActionListener callback.
+     */
+    public static void streamNextAsyncUpcall(
+        long streamPtr,
+        ActionListener<Long> listener
+    ) {
+        try {
+            NativeHandle.validatePointer(streamPtr, "stream");
+        } catch (Exception e) {
+            listener.onFailure(e);
+            return;
+        }
+        long listenerId = DataFusionCallbackBridge.registerListener(listener);
+        NativeCall.invokeVoid(STREAM_NEXT_ASYNC, streamPtr, listenerId);
+    }
 }
