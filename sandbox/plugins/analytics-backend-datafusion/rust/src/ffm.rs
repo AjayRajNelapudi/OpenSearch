@@ -608,6 +608,8 @@ pub unsafe extern "C" fn df_execute_with_context(
             cpu_executor,
         ))
         .map_err(|e| e.to_string())
+}
+
 // ---- Stats collection ----
 
 /// Collects all native executor metrics into a caller-provided byte buffer.
@@ -623,7 +625,7 @@ pub unsafe extern "C" fn df_stats(out_ptr: *mut u8, out_cap: i64) -> i64 {
         fetch_phase_monitor, segment_stats_monitor,
     };
 
-    if (out_cap as usize) < layout::BUFFER_BYTE_SIZE {
+    if out_cap < 0 || (out_cap as usize) < layout::BUFFER_BYTE_SIZE {
         return Err(format!(
             "stats buffer too small: need {} but got {}",
             layout::BUFFER_BYTE_SIZE, out_cap
