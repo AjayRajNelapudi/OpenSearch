@@ -11,47 +11,63 @@ package org.opensearch.analytics.qa;
 import org.opensearch.client.Request;
 import org.opensearch.client.Response;
 
-import java.util.Map;
+import java.util.List;
 
 /**
- * ClickBench integration test for PPL queries through the DataFusion backend.
+ * ClickBench PPL integration test. Runs PPL queries against a parquet-backed ClickBench index.
  * <p>
  * Query path: {@code POST /_analytics/ppl} → test-ppl-frontend → analytics-engine → Calcite → Substrait → DataFusion
  * <p>
- * ClickBench data is provisioned into a parquet-format index via {@link ClickBenchTestFixture}.
- * Requires the test-ppl-frontend plugin to be installed.
+ * Currently restricted to Q1 to keep CI green. Auto-discovery of all 43 ClickBench queries is
+ * temporarily disabled because several queries exercise unsupported translators/planner rules
+ * and the broader DSL run destabilizes the shared test cluster. Re-enable auto-discovery once
+ * the analytics-engine adds support for those paths.
  */
-public class PplClickBenchIT extends DataFusionRestTestCase {
+public class PplClickBenchIT extends AnalyticsRestTestCase {
+
+    /**
+     * ClickBench PPL query numbers to run. Q1 validates the PPL → DataFusion path end-to-end.
+     * Additional queries can be added here as the analytics engine adds support for more
+     * aggregation translators and planner rules.
+     */
+    private static final List<Integer> QUERY_NUMBERS = List.of(1);
 
     private static boolean dataProvisioned = false;
 
     private void ensureDataProvisioned() throws Exception {
         if (dataProvisioned == false) {
-            ClickBenchTestFixture.provisionIndex(client());
+            DatasetProvisioner.provision(client(), ClickBenchTestHelper.DATASET);
             dataProvisioned = true;
         }
     }
 
-    /**
-     * Verify that a simple PPL query against the parquet-backed ClickBench index
-     * returns a valid response via the unified PPL path.
-     */
-    public void testSimplePplQuery() throws Exception {
+    public void testClickBenchPplQueries() throws Exception {
         ensureDataProvisioned();
 
-        String pplQuery = "source = " + ClickBenchTestFixture.INDEX_NAME;
-        logger.info("=== PPL simple query: {} ===", pplQuery);
+        // Auto-discovery disabled until all ClickBench queries pass. See class javadoc.
+        // List<Integer> queryNumbers = DatasetQueryRunner.discoverQueryNumbers(ClickBenchTestHelper.DATASET, "ppl");
+        // assertFalse("No PPL queries discovered", queryNumbers.isEmpty());
+        // logger.info("Discovered {} PPL queries: {}", queryNumbers.size(), queryNumbers);
+        List<Integer> queryNumbers = QUERY_NUMBERS;
+        logger.info("Running {} PPL queries: {}", queryNumbers.size(), queryNumbers);
 
-        Request request = new Request("POST", "/_analytics/ppl");
-        request.setJsonEntity("{\"query\": \"" + escapeJson(pplQuery) + "\"}");
-        Response response = client().performRequest(request);
+        List<String> failures = DatasetQueryRunner.runQueries(
+            client(),
+            ClickBenchTestHelper.DATASET,
+            "ppl",
+            "ppl",
+            queryNumbers,
+            (client, dataset, queryBody) -> {
+                String ppl = queryBody.trim().replace("clickbench", dataset.indexName);
+                Request request = new Request("POST", "/_analytics/ppl");
+                request.setJsonEntity("{\"query\": \"" + escapeJson(ppl) + "\"}");
+                Response response = client.performRequest(request);
+                return assertOkAndParse(response, "PPL query");
+            }
+        );
 
-        Map<String, Object> responseMap = assertOkAndParse(response, "PPL simple query");
-        logger.info("PPL simple query response: {}", responseMap);
-
-        assertFalse("PPL response should not be empty", responseMap.isEmpty());
+        if (failures.isEmpty() == false) {
+            fail("PPL query failures (" + failures.size() + " of " + queryNumbers.size() + "):\n" + String.join("\n", failures));
+        }
     }
-
-    // TODO: Add ClickBench PPL aggregation queries (Q1-Q43) once the scheduler
-    // transport thread assertion is resolved in the analytics engine.
 }

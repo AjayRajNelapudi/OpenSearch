@@ -11,46 +11,63 @@ package org.opensearch.analytics.qa;
 import org.opensearch.client.Request;
 import org.opensearch.client.Response;
 
-import java.util.Map;
+import java.util.List;
 
 /**
- * ClickBench integration test for DSL queries through the DataFusion backend.
+ * ClickBench DSL integration test. Runs DSL queries against a parquet-backed ClickBench index.
  * <p>
  * Query path: {@code POST /{index}/_search} → dsl-query-executor → Calcite → Substrait → DataFusion
  * <p>
- * ClickBench data is provisioned into a parquet-format index via {@link ClickBenchTestFixture}.
- * To add more queries, add test methods that load from {@code clickbench/dsl/q{N}.json}.
+ * Currently restricted to Q1 to keep CI green. Auto-discovery of all 43 ClickBench queries is
+ * temporarily disabled because several queries exercise unsupported aggregation translators
+ * (e.g. ValueCount, Cardinality, MultiTerms) or planner rules, and in some cases crash the
+ * cluster, which cascades into the PPL suite as well. Re-enable auto-discovery once the
+ * analytics-engine adds support for those paths.
  */
-public class DslClickBenchIT extends DataFusionRestTestCase {
+public class DslClickBenchIT extends AnalyticsRestTestCase {
+
+    /**
+     * ClickBench DSL query numbers to run. Q1 validates the DSL → DataFusion path end-to-end.
+     * Additional queries can be added here as the analytics engine adds support for more
+     * aggregation translators and planner rules.
+     */
+    private static final List<Integer> QUERY_NUMBERS = List.of(1);
 
     private static boolean dataProvisioned = false;
 
     private void ensureDataProvisioned() throws Exception {
         if (dataProvisioned == false) {
-            ClickBenchTestFixture.provisionIndex(client());
+            DatasetProvisioner.provision(client(), ClickBenchTestHelper.DATASET);
             dataProvisioned = true;
         }
     }
 
-    /**
-     * Verify that a simple search against the parquet-backed ClickBench index
-     * returns a valid response via the DSL query path.
-     */
-    public void testSimpleSearch() throws Exception {
+    public void testClickBenchDslQueries() throws Exception {
         ensureDataProvisioned();
 
-        Request request = new Request("POST", "/" + ClickBenchTestFixture.INDEX_NAME + "/_search");
-        request.setJsonEntity("{\"size\": 0, \"track_total_hits\": true}");
-        Response response = client().performRequest(request);
+        // Auto-discovery disabled until all ClickBench queries pass. See class javadoc.
+        // List<Integer> queryNumbers = DatasetQueryRunner.discoverQueryNumbers(ClickBenchTestHelper.DATASET, "dsl");
+        // assertFalse("No DSL queries discovered", queryNumbers.isEmpty());
+        // logger.info("Discovered {} DSL queries: {}", queryNumbers.size(), queryNumbers);
+        List<Integer> queryNumbers = QUERY_NUMBERS;
+        logger.info("Running {} DSL queries: {}", queryNumbers.size(), queryNumbers);
 
-        Map<String, Object> responseMap = assertOkAndParse(response, "DSL simple search");
-        logger.info("DSL simple search response: {}", responseMap);
+        List<String> failures = DatasetQueryRunner.runQueries(
+            client(),
+            ClickBenchTestHelper.DATASET,
+            "dsl",
+            "json",
+            queryNumbers,
+            (client, dataset, queryBody) -> {
+                Request request = new Request("POST", "/" + dataset.indexName + "/_search");
+                request.setJsonEntity(queryBody);
+                Response response = client.performRequest(request);
+                return assertOkAndParse(response, "DSL query");
+            }
+        );
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> hits = (Map<String, Object>) responseMap.get("hits");
-        assertNotNull("Response should contain 'hits'", hits);
+        if (failures.isEmpty() == false) {
+            fail("DSL query failures (" + failures.size() + " of " + queryNumbers.size() + "):\n" + String.join("\n", failures));
+        }
     }
-
-    // TODO: Add ClickBench aggregation queries (Q1-Q43) once the scheduler
-    // transport thread assertion is resolved in the analytics engine.
 }
