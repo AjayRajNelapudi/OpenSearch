@@ -57,13 +57,6 @@ public final class NativeBridge {
     private static final MethodHandle REGISTER_ASYNC_CALLBACK;
     private static final MethodHandle EXECUTE_QUERY_ASYNC;
     private static final MethodHandle STREAM_NEXT_ASYNC;
-    private static final MethodHandle CREATE_LOCAL_SESSION;
-    private static final MethodHandle CLOSE_LOCAL_SESSION;
-    private static final MethodHandle REGISTER_PARTITION_STREAM;
-    private static final MethodHandle EXECUTE_LOCAL_PLAN;
-    private static final MethodHandle SENDER_SEND;
-    private static final MethodHandle SENDER_CLOSE;
-    private static final MethodHandle REGISTER_MEMTABLE;
     private static final MethodHandle STATS;
 
     static {
