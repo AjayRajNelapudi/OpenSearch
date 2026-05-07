@@ -591,35 +591,40 @@ pub unsafe extern "C" fn df_close_session_context(ptr: i64) {
     crate::session_context::close_session_context(ptr);
 }
 
+
 #[ffm_safe]
 #[no_mangle]
 pub unsafe extern "C" fn df_execute_with_context(
     session_ctx_ptr: i64,
     plan_ptr: *const u8,
     plan_len: i64,
+    query_config_ptr: i64,
 ) -> i64 {
     let mgr = get_rt_manager()?;
     let plan_bytes = slice::from_raw_parts(plan_ptr, plan_len as usize);
     let cpu_executor = mgr.cpu_executor();
+    let query_config =
+        crate::datafusion_query_config::DatafusionQueryConfig::from_ffm_ptr(query_config_ptr);
     mgr.io_runtime
         .block_on(crate::query_executor::execute_with_context(
             session_ctx_ptr,
             plan_bytes,
             cpu_executor,
+            &mgr.partition_semaphore,
+            query_config.target_partitions as u32,
         ))
         .map_err(|e| e.to_string())
 }
-
 // ---- Stats collection ----
 
 /// Collects all native executor metrics into a caller-provided byte buffer.
 ///
-/// The buffer must have capacity for at least `size_of::<DfStatsBuffer>()` bytes (224).
+/// The buffer must have capacity for at least `size_of::<DfStatsBuffer>()` bytes (272).
 /// Returns 0 on success.
 #[ffm_safe]
 #[no_mangle]
 pub unsafe extern "C" fn df_stats(out_ptr: *mut u8, out_cap: i64) -> i64 {
-    use crate::stats::{layout, pack_runtime_metrics, pack_task_monitor, DfStatsBuffer, RuntimeMetricsRepr};
+    use crate::stats::{layout, pack_runtime_metrics, pack_task_monitor, pack_partition_semaphore, DfStatsBuffer, RuntimeMetricsRepr};
     use crate::task_monitors::{
         query_execution_monitor, stream_next_monitor,
         fetch_phase_monitor, segment_stats_monitor,
@@ -655,6 +660,7 @@ pub unsafe extern "C" fn df_stats(out_ptr: *mut u8, out_cap: i64) -> i64 {
         stream_next: pack_task_monitor(stream_next_monitor()),
         fetch_phase: pack_task_monitor(fetch_phase_monitor()),
         segment_stats: pack_task_monitor(segment_stats_monitor()),
+        partition_semaphore: pack_partition_semaphore(&mgr.partition_semaphore),
     };
 
     // Copy struct bytes to caller buffer

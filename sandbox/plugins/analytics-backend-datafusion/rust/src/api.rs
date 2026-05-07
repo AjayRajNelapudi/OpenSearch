@@ -52,6 +52,7 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionConfig;
 use futures::TryStreamExt;
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::cross_rt_stream::CrossRtStream;
 use crate::custom_cache_manager::CustomCacheManager;
@@ -68,6 +69,9 @@ pub struct QueryStreamHandle {
     /// Held for its `Drop` impl — marks the query completed when the
     /// stream is closed.
     _query_tracking_context: QueryTrackingContext,
+    /// Held for its `Drop` impl — returns partition permits to the
+    /// semaphore when the stream is closed.
+    _partition_permit: Option<OwnedSemaphorePermit>,
 }
 
 impl QueryStreamHandle {
@@ -78,7 +82,13 @@ impl QueryStreamHandle {
         Self {
             stream,
             _query_tracking_context: query_context,
+            _partition_permit: None,
         }
+    }
+
+    pub fn with_partition_permit(mut self, permit: OwnedSemaphorePermit) -> Self {
+        self._partition_permit = Some(permit);
+        self
     }
 }
 
@@ -285,6 +295,11 @@ pub async unsafe fn execute_query(
         .memory_pool()
         .map(|p| p as Arc<dyn datafusion::execution::memory_pool::MemoryPool>);
 
+    // Acquire partition budget before dispatch
+    let partition_permit = manager.partition_semaphore
+        .acquire_budget(query_config.target_partitions as u32)
+        .await;
+
     // Peek at the substrait extensions list to see if this is an indexed query.
     // The `index_filter` UDF name appears there if Calcite planted any
     // index_filter(bytes) calls. Cheap — just bytes inspection.
@@ -319,7 +334,8 @@ pub async unsafe fn execute_query(
 
     // Reconstruct the stream from the raw pointer returned by the executor.
     let stream = *Box::from_raw(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>);
-    let handle = QueryStreamHandle::new(stream, query_context);
+    let handle = QueryStreamHandle::new(stream, query_context)
+        .with_partition_permit(partition_permit);
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
 

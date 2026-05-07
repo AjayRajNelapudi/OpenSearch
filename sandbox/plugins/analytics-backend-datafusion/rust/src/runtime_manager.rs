@@ -7,6 +7,7 @@
  */
 use crate::executor::DedicatedExecutor;
 use crate::io::register_io_runtime;
+use crate::partition_semaphore::PartitionSemaphore;
 use log::info;
 use std::sync::Arc;
 use tokio::runtime::{Builder, Runtime};
@@ -18,6 +19,7 @@ pub struct RuntimeManager {
     pub cpu_executor: DedicatedExecutor,
     pub io_monitor: RuntimeMonitor,
     pub cpu_monitor: Option<RuntimeMonitor>,
+    pub partition_semaphore: Arc<PartitionSemaphore>,
 }
 
 impl RuntimeManager {
@@ -53,11 +55,14 @@ impl RuntimeManager {
             .handle()
             .map(|h| RuntimeMonitor::new(&h));
 
+        let partition_semaphore = Arc::new(PartitionSemaphore::new(cpu_threads));
+
         Self {
             io_runtime,
             cpu_executor,
             io_monitor,
             cpu_monitor,
+            partition_semaphore,
         }
     }
 

@@ -161,8 +161,13 @@ pub async unsafe fn execute_with_context(
     session_ctx_ptr: i64,
     plan_bytes: &[u8],
     cpu_executor: DedicatedExecutor,
+    partition_semaphore: &crate::partition_semaphore::PartitionSemaphore,
+    target_partitions: u32,
 ) -> Result<i64, DataFusionError> {
     let handle = *Box::from_raw(session_ctx_ptr as *mut SessionContextHandle);
+
+    // Acquire partition budget before plan execution
+    let partition_permit = partition_semaphore.acquire_budget(target_partitions).await;
 
     let substrait_plan = Plan::decode(plan_bytes).map_err(|e| {
         DataFusionError::Execution(format!("Failed to decode Substrait: {}", e))
@@ -183,6 +188,7 @@ pub async unsafe fn execute_with_context(
         cross_rt_stream,
     );
 
-    let stream_handle = crate::api::QueryStreamHandle::new(wrapped, handle.query_context);
+    let stream_handle = crate::api::QueryStreamHandle::new(wrapped, handle.query_context)
+        .with_partition_permit(partition_permit);
     Ok(Box::into_raw(Box::new(stream_handle)) as i64)
 }

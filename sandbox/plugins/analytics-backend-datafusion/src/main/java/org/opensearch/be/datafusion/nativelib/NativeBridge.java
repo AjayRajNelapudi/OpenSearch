@@ -11,6 +11,7 @@ package org.opensearch.be.datafusion.nativelib;
 import org.opensearch.analytics.backend.jni.NativeHandle;
 import org.opensearch.be.datafusion.stats.DataFusionStats;
 import org.opensearch.be.datafusion.stats.NativeExecutorsStats;
+import org.opensearch.be.datafusion.stats.PartitionSemaphoreStats;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.nativebridge.spi.NativeCall;
 import org.opensearch.nativebridge.spi.NativeLibraryLoader;
@@ -360,7 +361,7 @@ public final class NativeBridge {
 
         EXECUTE_WITH_CONTEXT = linker.downcallHandle(
             lib.find("df_execute_with_context").orElseThrow(),
-            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
         );
 
         // i64 df_stats(out_ptr, out_cap)
@@ -621,7 +622,10 @@ public final class NativeBridge {
                 taskMonitors.put(op.key(), StatsLayout.readTaskMonitor(seg, op.key()));
             }
 
-            return new DataFusionStats(new NativeExecutorsStats(ioRuntime, cpuRuntime, taskMonitors));
+            // Partition semaphore
+            var partitionSemaphore = StatsLayout.readPartitionSemaphore(seg);
+
+            return new DataFusionStats(new NativeExecutorsStats(ioRuntime, cpuRuntime, taskMonitors), partitionSemaphore);
         }
     }
 
@@ -782,10 +786,10 @@ public final class NativeBridge {
         NativeCall.invokeVoid(CLOSE_SESSION_CONTEXT, ptr);
     }
 
-    public static void executeWithContextAsync(long sessionCtxPtr, byte[] substraitPlan, ActionListener<Long> listener) {
+    public static void executeWithContextAsync(long sessionCtxPtr, byte[] substraitPlan, long queryConfigPtr, ActionListener<Long> listener) {
         NativeHandle.validatePointer(sessionCtxPtr, "sessionContext");
         try (var call = new NativeCall()) {
-            long result = call.invoke(EXECUTE_WITH_CONTEXT, sessionCtxPtr, call.bytes(substraitPlan), (long) substraitPlan.length);
+            long result = call.invoke(EXECUTE_WITH_CONTEXT, sessionCtxPtr, call.bytes(substraitPlan), (long) substraitPlan.length, queryConfigPtr);
             listener.onResponse(result);
         } catch (Throwable throwable) {
             listener.onFailure(throwable instanceof Exception ? (Exception) throwable : new RuntimeException(throwable));

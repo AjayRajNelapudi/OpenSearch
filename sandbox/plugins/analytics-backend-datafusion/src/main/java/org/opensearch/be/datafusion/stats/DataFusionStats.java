@@ -33,14 +33,26 @@ import java.util.Objects;
 public class DataFusionStats implements PluginStats, Writeable, ToXContentFragment {
 
     private final NativeExecutorsStats nativeExecutorsStats; // nullable
+    private final PartitionSemaphoreStats partitionSemaphoreStats; // nullable
 
     /**
      * Construct from components.
      *
+     * @param nativeExecutorsStats    the native executor metrics (nullable)
+     * @param partitionSemaphoreStats the partition semaphore metrics (nullable)
+     */
+    public DataFusionStats(NativeExecutorsStats nativeExecutorsStats, PartitionSemaphoreStats partitionSemaphoreStats) {
+        this.nativeExecutorsStats = nativeExecutorsStats;
+        this.partitionSemaphoreStats = partitionSemaphoreStats;
+    }
+
+    /**
+     * Construct with only native executor stats (backward-compatible convenience).
+     *
      * @param nativeExecutorsStats the native executor metrics (nullable)
      */
     public DataFusionStats(NativeExecutorsStats nativeExecutorsStats) {
-        this.nativeExecutorsStats = nativeExecutorsStats;
+        this(nativeExecutorsStats, null);
     }
 
     /**
@@ -51,17 +63,22 @@ public class DataFusionStats implements PluginStats, Writeable, ToXContentFragme
      */
     public DataFusionStats(StreamInput in) throws IOException {
         this.nativeExecutorsStats = in.readOptionalWriteable(NativeExecutorsStats::new);
+        this.partitionSemaphoreStats = in.readOptionalWriteable(PartitionSemaphoreStats::new);
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeOptionalWriteable(nativeExecutorsStats);
+        out.writeOptionalWriteable(partitionSemaphoreStats);
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         if (nativeExecutorsStats != null) {
             nativeExecutorsStats.toXContent(builder, params);
+        }
+        if (partitionSemaphoreStats != null) {
+            partitionSemaphoreStats.toXContent(builder, params);
         }
         return builder;
     }
@@ -73,16 +90,24 @@ public class DataFusionStats implements PluginStats, Writeable, ToXContentFragme
         return nativeExecutorsStats;
     }
 
+    /**
+     * Returns the partition semaphore metrics, or {@code null} if absent.
+     */
+    public PartitionSemaphoreStats getPartitionSemaphoreStats() {
+        return partitionSemaphoreStats;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         DataFusionStats that = (DataFusionStats) o;
-        return Objects.equals(nativeExecutorsStats, that.nativeExecutorsStats);
+        return Objects.equals(nativeExecutorsStats, that.nativeExecutorsStats)
+            && Objects.equals(partitionSemaphoreStats, that.partitionSemaphoreStats);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(nativeExecutorsStats);
+        return Objects.hash(nativeExecutorsStats, partitionSemaphoreStats);
     }
 }
