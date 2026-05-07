@@ -601,12 +601,32 @@ pub unsafe extern "C" fn df_execute_with_context(
     let mgr = get_rt_manager()?;
     let plan_bytes = slice::from_raw_parts(plan_ptr, plan_len as usize);
     let cpu_executor = mgr.cpu_executor();
+
+    // See df_execute_query for the rationale behind wrapping the inner
+    // async work in cpu_executor.spawn. DataFusion operators eagerly
+    // spawn in execute(). Without this wrap those spawns inherit the IO
+    // runtime and do all the work there, leaving the CPU runtime idle.
+    let plan_vec = plan_bytes.to_vec();
+    let cpu_for_cross = cpu_executor.clone();
+    let mgr_for_spawn = Arc::clone(&mgr);
+
     mgr.io_runtime
-        .block_on(crate::query_executor::execute_with_context(
-            session_ctx_ptr,
-            plan_bytes,
-            cpu_executor,
-        ))
+        .block_on(async move {
+            let inner_fut = async move {
+                crate::query_executor::execute_with_context(
+                    session_ctx_ptr,
+                    &plan_vec,
+                    cpu_for_cross,
+                )
+                .await
+            };
+            match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
+                Ok(inner) => inner,
+                Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
+                    "df_execute_with_context: CPU spawn failed: {e:?}"
+                ))),
+            }
+        })
         .map_err(|e| e.to_string())
 }
 
