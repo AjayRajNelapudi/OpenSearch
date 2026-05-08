@@ -188,7 +188,7 @@ pub unsafe extern "C" fn df_stream_get_schema(stream_ptr: i64) -> i64 {
 pub unsafe extern "C" fn df_stream_next(stream_ptr: i64) -> i64 {
     let mgr = get_rt_manager()?;
     mgr.io_runtime
-        .block_on(api::stream_next(stream_ptr))
+        .block_on(api::stream_next(stream_ptr, &mgr.partition_gate))
         .map_err(|e| e.to_string())
 }
 
@@ -652,16 +652,17 @@ pub unsafe extern "C" fn df_execute_with_context(
     }
 }
 
+
 // ---- Stats collection ----
 
 /// Collects all native executor metrics into a caller-provided byte buffer.
 ///
-/// The buffer must have capacity for at least `size_of::<DfStatsBuffer>()` bytes (224).
+/// The buffer must have capacity for at least `size_of::<DfStatsBuffer>()` bytes (272).
 /// Returns 0 on success.
 #[ffm_safe]
 #[no_mangle]
 pub unsafe extern "C" fn df_stats(out_ptr: *mut u8, out_cap: i64) -> i64 {
-    use crate::stats::{layout, pack_runtime_metrics, pack_task_monitor, DfStatsBuffer, RuntimeMetricsRepr};
+    use crate::stats::{layout, pack_runtime_metrics, pack_task_monitor, pack_partition_gate, DfStatsBuffer, RuntimeMetricsRepr};
     use crate::task_monitors::{
         query_execution_monitor, stream_next_monitor,
         fetch_phase_monitor, segment_stats_monitor,
@@ -697,6 +698,7 @@ pub unsafe extern "C" fn df_stats(out_ptr: *mut u8, out_cap: i64) -> i64 {
         stream_next: pack_task_monitor(stream_next_monitor()),
         fetch_phase: pack_task_monitor(fetch_phase_monitor()),
         segment_stats: pack_task_monitor(segment_stats_monitor()),
+        partition_gate: pack_partition_gate(&mgr.partition_gate),
     };
 
     // Copy struct bytes to caller buffer

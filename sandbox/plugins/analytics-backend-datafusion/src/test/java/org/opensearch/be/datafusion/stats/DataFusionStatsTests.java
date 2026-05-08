@@ -36,7 +36,7 @@ public class DataFusionStatsTests extends OpenSearchTestCase {
         taskMonitors.put("stream_next", new TaskMonitorStats(20, 21, 22));
         taskMonitors.put("fetch_phase", new TaskMonitorStats(23, 24, 25));
         taskMonitors.put("segment_stats", new TaskMonitorStats(26, 27, 28));
-        return new DataFusionStats(new NativeExecutorsStats(io, cpu, taskMonitors));
+        return new DataFusionStats(new NativeExecutorsStats(io, cpu, taskMonitors), null);
     }
 
     private static String toJsonString(DataFusionStats stats) throws IOException {
@@ -117,7 +117,7 @@ public class DataFusionStatsTests extends OpenSearchTestCase {
         taskMonitors.put("fetch_phase", new TaskMonitorStats(20, 21, 22));
         taskMonitors.put("segment_stats", new TaskMonitorStats(23, 24, 25));
 
-        DataFusionStats stats = new DataFusionStats(new NativeExecutorsStats(io, null, taskMonitors));
+        DataFusionStats stats = new DataFusionStats(new NativeExecutorsStats(io, null, taskMonitors), null);
         assertNull(stats.getNativeExecutorsStats().getCpuRuntime());
 
         String json = toJsonString(stats);
@@ -186,7 +186,7 @@ public class DataFusionStatsTests extends OpenSearchTestCase {
         taskMonitors.put("fetch_phase", new TaskMonitorStats(20, 21, 22));
         taskMonitors.put("segment_stats", new TaskMonitorStats(23, 24, 25));
 
-        DataFusionStats stats = new DataFusionStats(new NativeExecutorsStats(io, null, taskMonitors));
+        DataFusionStats stats = new DataFusionStats(new NativeExecutorsStats(io, null, taskMonitors), null);
         String json = toJsonString(stats);
 
         assertTrue(json.contains("\"io_runtime\""));
