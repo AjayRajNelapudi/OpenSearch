@@ -25,7 +25,6 @@ pub mod indexed_table;
 pub mod io;
 pub mod local_executor;
 pub mod memory;
-pub mod partition_gate;
 pub mod partition_stream;
 pub mod query_executor;
 pub mod query_tracker;

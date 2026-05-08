@@ -33,17 +33,14 @@ import java.util.Objects;
 public class DataFusionStats implements PluginStats, Writeable, ToXContentFragment {
 
     private final NativeExecutorsStats nativeExecutorsStats; // nullable
-    private final PartitionGateStats partitionGateStats; // nullable
 
     /**
      * Construct from components.
      *
      * @param nativeExecutorsStats the native executor metrics (nullable)
-     * @param partitionGateStats   the partition gate metrics (nullable)
      */
-    public DataFusionStats(NativeExecutorsStats nativeExecutorsStats, PartitionGateStats partitionGateStats) {
+    public DataFusionStats(NativeExecutorsStats nativeExecutorsStats) {
         this.nativeExecutorsStats = nativeExecutorsStats;
-        this.partitionGateStats = partitionGateStats;
     }
 
     /**
@@ -54,22 +51,17 @@ public class DataFusionStats implements PluginStats, Writeable, ToXContentFragme
      */
     public DataFusionStats(StreamInput in) throws IOException {
         this.nativeExecutorsStats = in.readOptionalWriteable(NativeExecutorsStats::new);
-        this.partitionGateStats = in.readOptionalWriteable(PartitionGateStats::new);
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeOptionalWriteable(nativeExecutorsStats);
-        out.writeOptionalWriteable(partitionGateStats);
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         if (nativeExecutorsStats != null) {
             nativeExecutorsStats.toXContent(builder, params);
-        }
-        if (partitionGateStats != null) {
-            partitionGateStats.toXContent(builder, params);
         }
         return builder;
     }
@@ -81,24 +73,16 @@ public class DataFusionStats implements PluginStats, Writeable, ToXContentFragme
         return nativeExecutorsStats;
     }
 
-    /**
-     * Returns the partition gate metrics, or {@code null} if absent.
-     */
-    public PartitionGateStats getPartitionGateStats() {
-        return partitionGateStats;
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         DataFusionStats that = (DataFusionStats) o;
-        return Objects.equals(nativeExecutorsStats, that.nativeExecutorsStats)
-            && Objects.equals(partitionGateStats, that.partitionGateStats);
+        return Objects.equals(nativeExecutorsStats, that.nativeExecutorsStats);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(nativeExecutorsStats, partitionGateStats);
+        return Objects.hash(nativeExecutorsStats);
     }
 }
