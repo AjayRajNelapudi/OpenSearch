@@ -8,6 +8,7 @@
 
 package org.opensearch.be.datafusion.nativelib;
 
+import org.opensearch.be.datafusion.stats.PartitionGateStats;
 import org.opensearch.be.datafusion.stats.RuntimeMetrics;
 import org.opensearch.be.datafusion.stats.TaskMonitorStats;
 
@@ -22,7 +23,7 @@ import java.lang.invoke.VarHandle;
  * Defines the {@code MemoryLayout.structLayout} mirroring the Rust {@code DfStatsBuffer}
  * and provides {@link VarHandle} accessors for each field via layout path navigation.
  *
- * <p>The layout contains 6 named groups (2 runtime × 9 fields + 4 task monitor × 3 fields = 30 longs = 240 bytes).
+ * <p>The layout contains 7 named groups (2 runtime × 9 fields + 4 task monitor × 3 fields + 1 partition gate × 4 fields = 34 longs = 272 bytes).
  */
 public final class StatsLayout {
 
@@ -42,6 +43,12 @@ public final class StatsLayout {
         "total_scheduled_duration_ms",
         "total_idle_duration_ms" };
 
+    private static final String[] PARTITION_GATE_FIELDS = {
+        "max_permits",
+        "active_permits",
+        "total_wait_duration_ms",
+        "total_batches_started" };
+
     /** The struct layout mirroring Rust's {@code DfStatsBuffer}. */
     public static final StructLayout LAYOUT = MemoryLayout.structLayout(
         runtimeGroup("io_runtime"),
@@ -49,12 +56,13 @@ public final class StatsLayout {
         taskMonitorGroup("query_execution"),
         taskMonitorGroup("stream_next"),
         taskMonitorGroup("fetch_phase"),
-        taskMonitorGroup("segment_stats")
+        taskMonitorGroup("segment_stats"),
+        partitionGateGroup("partition_gate")
     );
 
     static {
-        if (LAYOUT.byteSize() != 30 * Long.BYTES) {
-            throw new AssertionError("StatsLayout size mismatch: expected " + (30 * Long.BYTES) + " but got " + LAYOUT.byteSize());
+        if (LAYOUT.byteSize() != 34 * Long.BYTES) {
+            throw new AssertionError("StatsLayout size mismatch: expected " + (34 * Long.BYTES) + " but got " + LAYOUT.byteSize());
         }
     }
 
@@ -99,6 +107,12 @@ public final class StatsLayout {
     private static final VarHandle SS_TOTAL_POLL_DURATION_MS = handle("segment_stats", "total_poll_duration_ms");
     private static final VarHandle SS_TOTAL_SCHEDULED_DURATION_MS = handle("segment_stats", "total_scheduled_duration_ms");
     private static final VarHandle SS_TOTAL_IDLE_DURATION_MS = handle("segment_stats", "total_idle_duration_ms");
+
+    // ---- VarHandles for partition_gate fields ----
+    private static final VarHandle PG_MAX_PERMITS = handle("partition_gate", "max_permits");
+    private static final VarHandle PG_ACTIVE_PERMITS = handle("partition_gate", "active_permits");
+    private static final VarHandle PG_TOTAL_WAIT_DURATION_MS = handle("partition_gate", "total_wait_duration_ms");
+    private static final VarHandle PG_TOTAL_BATCHES_STARTED = handle("partition_gate", "total_batches_started");
 
     private StatsLayout() {}
 
@@ -148,6 +162,21 @@ public final class StatsLayout {
         return new TaskMonitorStats((long) handles[0].get(seg, 0L), (long) handles[1].get(seg, 0L), (long) handles[2].get(seg, 0L));
     }
 
+    /**
+     * Read the partition gate group (4 fields) from the segment.
+     *
+     * @param seg the memory segment containing the DfStatsBuffer
+     * @return a populated PartitionGateStats instance
+     */
+    public static PartitionGateStats readPartitionGate(MemorySegment seg) {
+        return new PartitionGateStats(
+            (long) PG_MAX_PERMITS.get(seg, 0L),
+            (long) PG_ACTIVE_PERMITS.get(seg, 0L),
+            (long) PG_TOTAL_WAIT_DURATION_MS.get(seg, 0L),
+            (long) PG_TOTAL_BATCHES_STARTED.get(seg, 0L)
+        );
+    }
+
     // ---- Private helpers ----
 
     private static StructLayout runtimeGroup(String name) {
@@ -169,6 +198,15 @@ public final class StatsLayout {
             ValueLayout.JAVA_LONG.withName("total_poll_duration_ms"),
             ValueLayout.JAVA_LONG.withName("total_scheduled_duration_ms"),
             ValueLayout.JAVA_LONG.withName("total_idle_duration_ms")
+        ).withName(name);
+    }
+
+    private static StructLayout partitionGateGroup(String name) {
+        return MemoryLayout.structLayout(
+            ValueLayout.JAVA_LONG.withName("max_permits"),
+            ValueLayout.JAVA_LONG.withName("active_permits"),
+            ValueLayout.JAVA_LONG.withName("total_wait_duration_ms"),
+            ValueLayout.JAVA_LONG.withName("total_batches_started")
         ).withName(name);
     }
 

@@ -103,7 +103,7 @@ public class DataFusionStatsPropertyTests {
             monitors.put("stream_next", sn);
             monitors.put("fetch_phase", fp);
             monitors.put("segment_stats", ss);
-            return new DataFusionStats(new NativeExecutorsStats(io, cpu, monitors));
+            return new DataFusionStats(new NativeExecutorsStats(io, cpu, monitors), null);
         });
     }
 
@@ -117,13 +117,13 @@ public class DataFusionStatsPropertyTests {
                 monitors.put("stream_next", sn);
                 monitors.put("fetch_phase", fp);
                 monitors.put("segment_stats", ss);
-                return new DataFusionStats(new NativeExecutorsStats(io, null, monitors));
+                return new DataFusionStats(new NativeExecutorsStats(io, null, monitors), null);
             });
     }
 
     @Provide
     Arbitrary<DataFusionStats> dataFusionStatsNullExecutors() {
-        return Arbitraries.just(new DataFusionStats((NativeExecutorsStats) null));
+        return Arbitraries.just(new DataFusionStats(null, null));
     }
 
     // ---- Property 1: Writeable round-trip preserves all field values ----
