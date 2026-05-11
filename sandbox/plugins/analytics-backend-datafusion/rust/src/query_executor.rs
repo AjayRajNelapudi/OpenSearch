@@ -175,7 +175,7 @@ pub async fn execute_with_context(
     let physical_plan = dataframe.create_physical_plan().await?;
 
     // Acquire concurrency gate permit BEFORE execute_stream spawns partition tasks.
-    let partition_weight = physical_plan.properties().output_partitioning().partition_count().max(1) as u32;
+    let partition_weight = handle.ctx.state().config().target_partitions().max(1) as u32;
     let gate = cpu_executor.concurrency_gate();
     let permit = gate.acquire_many(partition_weight.min(gate.max_permits())).await;
 
