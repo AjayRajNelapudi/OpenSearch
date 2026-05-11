@@ -58,7 +58,6 @@ use crate::cross_rt_stream::CrossRtStream;
 use crate::custom_cache_manager::CustomCacheManager;
 use crate::local_executor::LocalSession;
 use crate::memory::{DynamicLimitHandle, DynamicLimitPool};
-use crate::partition_gate::PartitionGate;
 use crate::partition_stream::PartitionStreamSender;
 use crate::query_tracker::{self, QueryTrackingContext};
 use crate::runtime_manager::RuntimeManager;
@@ -397,26 +396,9 @@ pub unsafe fn stream_get_schema(stream_ptr: i64) -> Result<i64, DataFusionError>
 /// on the same stream.
 pub async unsafe fn stream_next(
     stream_ptr: i64,
-    partition_gate: &PartitionGate,
 ) -> Result<i64, DataFusionError> {
     let handle = &mut *(stream_ptr as *mut QueryStreamHandle);
     let token = query_tracker::get_cancellation_token(handle._query_tracking_context.context_id());
-
-    // Acquire partition gate permit (cancellation-aware).
-    // On cancellation, return end-of-stream (0) to Java.
-    let permit = {
-        use std::convert::Infallible;
-        let result = cancellation::cancellable_or(
-            token.as_ref(),
-            None::<tokio::sync::OwnedSemaphorePermit>,
-            async { Ok::<_, Infallible>(Some(partition_gate.acquire().await)) },
-        )
-        .await;
-        match result {
-            Ok(Some(p)) => p,
-            Ok(None) | Err(_) => return Ok(0), // cancelled — end-of-stream
-        }
-    };
 
     // Fetch the next batch (cancellation-aware)
     let result = cancellation::cancellable_or(
@@ -425,9 +407,6 @@ pub async unsafe fn stream_next(
         async { handle.stream.try_next().await.map_err(|e: DataFusionError| e) },
     ).await
     .map_err(|e| DataFusionError::Execution(e))?;
-
-    // Permit released here via drop — before returning to caller
-    drop(permit);
 
     match result {
         Some(batch) => {

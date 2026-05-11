@@ -23,7 +23,7 @@
 use tokio::runtime::Handle;
 use tokio_metrics::{RuntimeMonitor, TaskMonitor};
 
-use crate::partition_gate::PartitionGate;
+use crate::executor::ConcurrencyGate;
 
 #[repr(C)]
 pub struct RuntimeMetricsRepr {
@@ -153,20 +153,20 @@ pub fn pack_task_monitor(monitor: &TaskMonitor) -> TaskMonitorRepr {
     }
 }
 
-/// Snapshot a `PartitionGate` and return a populated `PartitionGateRepr`.
+/// Snapshot a `ConcurrencyGate` and return a populated `PartitionGateRepr`.
 ///
 /// | Field                  | Source                              |
 /// |------------------------|-------------------------------------|
 /// | max_permits            | `gate.max_permits()`                |
 /// | active_permits         | `gate.active_permits()`             |
-/// | total_wait_duration_ms | `gate.total_wait_duration_ms()`     |
-/// | total_batches_started  | `gate.total_batches_started()`      |
-pub fn pack_partition_gate(gate: &PartitionGate) -> PartitionGateRepr {
+/// | total_wait_duration_ms | `gate.total_wait_ms()`              |
+/// | total_batches_started  | `gate.total_queries_admitted()`     |
+pub fn pack_partition_gate(gate: &ConcurrencyGate) -> PartitionGateRepr {
     PartitionGateRepr {
         max_permits: gate.max_permits() as i64,
         active_permits: gate.active_permits() as i64,
-        total_wait_duration_ms: gate.total_wait_duration_ms() as i64,
-        total_batches_started: gate.total_batches_started() as i64,
+        total_wait_duration_ms: gate.total_wait_ms() as i64,
+        total_batches_started: gate.total_queries_admitted() as i64,
     }
 }
 
@@ -251,7 +251,7 @@ mod tests {
             stream_next: pack_task_monitor(stream_next_monitor()),
             fetch_phase: pack_task_monitor(fetch_phase_monitor()),
             segment_stats: pack_task_monitor(segment_stats_monitor()),
-            partition_gate: pack_partition_gate(&mgr.partition_gate),
+            partition_gate: pack_partition_gate(mgr.cpu_executor.concurrency_gate()),
         };
 
         assert_eq!(layout::BUFFER_BYTE_SIZE, 272);

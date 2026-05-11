@@ -55,16 +55,22 @@ impl CrossRtStream {
         exec: DedicatedExecutor,
     ) -> Self {
         let schema = stream.schema();
+        let gate = Arc::clone(exec.concurrency_gate());
         Self::new_with_tx(
             |tx| {
                 let tx_captured = tx.clone();
                 let fut = async move {
+                    // Acquire concurrency permit for the entire query stream lifetime.
+                    // This limits how many queries can have active partition tasks
+                    // on the CPU runtime simultaneously.
+                    let _permit = gate.acquire().await;
                     tokio::pin!(stream);
                     while let Some(res) = stream.next().await {
                         if tx_captured.send(res).await.is_err() {
                             return;
                         }
                     }
+                    // _permit dropped here — only when stream fully consumed or sender closed
                 };
                 async move {
                     if let Err(e) = exec.spawn(fut).await {
@@ -138,7 +144,7 @@ mod tests {
     fn test_exec() -> DedicatedExecutor {
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.worker_threads(2).enable_all();
-        DedicatedExecutor::new("test-cpu", builder)
+        DedicatedExecutor::new("test-cpu", builder, 16)
     }
 
     fn test_schema() -> SchemaRef {

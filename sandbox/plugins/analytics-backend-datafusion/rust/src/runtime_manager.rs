@@ -7,7 +7,6 @@
  */
 use crate::executor::DedicatedExecutor;
 use crate::io::register_io_runtime;
-use crate::partition_gate::PartitionGate;
 use log::info;
 use std::sync::Arc;
 use tokio::runtime::{Builder, Runtime};
@@ -19,7 +18,6 @@ pub struct RuntimeManager {
     pub cpu_executor: DedicatedExecutor,
     pub io_monitor: RuntimeMonitor,
     pub cpu_monitor: Option<RuntimeMonitor>,
-    pub partition_gate: Arc<PartitionGate>,
 }
 
 impl RuntimeManager {
@@ -49,20 +47,17 @@ impl RuntimeManager {
                 register_io_runtime(Some(io_handle.clone()));
             });
 
-        let cpu_executor = DedicatedExecutor::new("datafusion-cpu", cpu_runtime_builder);
+        let cpu_executor = DedicatedExecutor::new("datafusion-cpu", cpu_runtime_builder, cpu_threads);
 
         let cpu_monitor = cpu_executor
             .handle()
             .map(|h| RuntimeMonitor::new(&h));
-
-        let partition_gate = Arc::new(PartitionGate::new(cpu_threads));
 
         Self {
             io_runtime,
             cpu_executor,
             io_monitor,
             cpu_monitor,
-            partition_gate,
         }
     }
 

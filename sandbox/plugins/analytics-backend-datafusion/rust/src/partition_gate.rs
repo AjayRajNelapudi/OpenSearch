@@ -426,35 +426,4 @@ mod tests {
         // Only 1 batch was started (the blocker), not the cancelled one
         assert_eq!(gate.total_batches_started(), 1);
     }
-
-    /// Task 8.4: df_stats reports correct partition gate values
-    ///
-    /// Verifies that pack_partition_gate correctly reports the gate's state
-    /// at various points in its lifecycle.
-    #[tokio::test]
-    async fn stats_reports_correct_partition_gate_values() {
-        use crate::stats::pack_partition_gate;
-
-        let gate = PartitionGate::new(4); // 6 permits
-
-        // Initial state
-        let stats = pack_partition_gate(&gate);
-        assert_eq!(stats.max_permits, 6);
-        assert_eq!(stats.active_permits, 0);
-        assert_eq!(stats.total_wait_duration_ms, 0);
-        assert_eq!(stats.total_batches_started, 0);
-
-        // After acquiring a permit
-        let permit = gate.acquire().await;
-        let stats = pack_partition_gate(&gate);
-        assert_eq!(stats.max_permits, 6);
-        assert_eq!(stats.active_permits, 1);
-        assert_eq!(stats.total_batches_started, 1);
-
-        // After releasing
-        drop(permit);
-        let stats = pack_partition_gate(&gate);
-        assert_eq!(stats.active_permits, 0);
-        assert_eq!(stats.total_batches_started, 1); // cumulative — doesn't decrease
-    }
 }

@@ -217,7 +217,7 @@ pub unsafe extern "C" fn df_stream_get_schema(stream_ptr: i64) -> i64 {
 pub unsafe extern "C" fn df_stream_next(stream_ptr: i64) -> i64 {
     let mgr = get_rt_manager()?;
     mgr.io_runtime
-        .block_on(api::stream_next(stream_ptr, &mgr.partition_gate))
+        .block_on(api::stream_next(stream_ptr))
         .map_err(|e| e.to_string())
 }
 
@@ -746,7 +746,7 @@ pub unsafe extern "C" fn df_stats(out_ptr: *mut u8, out_cap: i64) -> i64 {
         stream_next: pack_task_monitor(stream_next_monitor()),
         fetch_phase: pack_task_monitor(fetch_phase_monitor()),
         segment_stats: pack_task_monitor(segment_stats_monitor()),
-        partition_gate: pack_partition_gate(&mgr.partition_gate),
+        partition_gate: pack_partition_gate(mgr.cpu_executor.concurrency_gate()),
     };
 
     // Copy struct bytes to caller buffer
