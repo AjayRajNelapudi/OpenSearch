@@ -47,7 +47,7 @@ impl RuntimeManager {
                 register_io_runtime(Some(io_handle.clone()));
             });
 
-        let cpu_executor = DedicatedExecutor::new("datafusion-cpu", cpu_runtime_builder, cpu_threads);
+        let cpu_executor = DedicatedExecutor::new("datafusion-cpu", cpu_runtime_builder, (cpu_threads as f64 * 1.5) as usize);
 
         let cpu_monitor = cpu_executor
             .handle()

@@ -146,7 +146,7 @@ pub async fn execute_query(
 
     // Wrap in CrossRtStream — CPU work runs on DedicatedExecutor
     let cross_rt_stream =
-        CrossRtStream::new_with_df_error_stream(df_stream, cpu_executor);
+        CrossRtStream::new_with_df_error_stream(df_stream, cpu_executor, query_config.target_partitions as u32);
     let wrapped = datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
         cross_rt_stream.schema(),
         cross_rt_stream,
@@ -179,7 +179,11 @@ pub async fn execute_with_context(
         e
     })?;
 
-    let cross_rt_stream = CrossRtStream::new_with_df_error_stream(df_stream, cpu_executor);
+    let cross_rt_stream = CrossRtStream::new_with_df_error_stream(
+        df_stream,
+        cpu_executor,
+        handle.ctx.state().config().target_partitions() as u32,
+    );
     let wrapped = datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
         cross_rt_stream.schema(),
         cross_rt_stream,

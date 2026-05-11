@@ -53,6 +53,7 @@ impl CrossRtStream {
     pub fn new_with_df_error_stream(
         stream: SendableRecordBatchStream,
         exec: DedicatedExecutor,
+        partition_weight: u32,
     ) -> Self {
         let schema = stream.schema();
         let gate = Arc::clone(exec.concurrency_gate());
@@ -60,10 +61,11 @@ impl CrossRtStream {
             |tx| {
                 let tx_captured = tx.clone();
                 let fut = async move {
-                    // Acquire concurrency permit for the entire query stream lifetime.
-                    // This limits how many queries can have active partition tasks
-                    // on the CPU runtime simultaneously.
-                    let _permit = gate.acquire().await;
+                    // Acquire partition-weighted concurrency permits for the entire
+                    // query stream lifetime. Each query consumes `partition_weight`
+                    // permits, so the total alive partition tasks across all queries
+                    // is bounded by the semaphore's max permits.
+                    let _permit = gate.acquire_many(partition_weight).await;
                     tokio::pin!(stream);
                     while let Some(res) = stream.next().await {
                         if tx_captured.send(res).await.is_err() {
@@ -169,7 +171,7 @@ mod tests {
             stream::iter(batches),
         ));
 
-        let cross = CrossRtStream::new_with_df_error_stream(inner, exec.clone());
+        let cross = CrossRtStream::new_with_df_error_stream(inner, exec.clone(), 1);
         let wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
         tokio::pin!(wrapped);
 
@@ -190,7 +192,7 @@ mod tests {
             stream::empty(),
         ));
 
-        let cross = CrossRtStream::new_with_df_error_stream(inner, exec.clone());
+        let cross = CrossRtStream::new_with_df_error_stream(inner, exec.clone(), 1);
         let wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
         tokio::pin!(wrapped);
 
@@ -211,7 +213,7 @@ mod tests {
             stream::iter(batches),
         ));
 
-        let cross = CrossRtStream::new_with_df_error_stream(inner, exec.clone());
+        let cross = CrossRtStream::new_with_df_error_stream(inner, exec.clone(), 1);
         let wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
         tokio::pin!(wrapped);
 
@@ -232,7 +234,7 @@ mod tests {
             stream::empty::<Result<RecordBatch, DataFusionError>>(),
         ));
 
-        let cross = CrossRtStream::new_with_df_error_stream(inner, exec.clone());
+        let cross = CrossRtStream::new_with_df_error_stream(inner, exec.clone(), 1);
         assert_eq!(cross.schema(), schema);
         exec.join_blocking();
     }

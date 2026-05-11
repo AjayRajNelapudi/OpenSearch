@@ -54,8 +54,13 @@ impl ConcurrencyGate {
 
     /// Acquire a permit. Held for the entire query stream lifetime.
     pub async fn acquire(&self) -> OwnedSemaphorePermit {
+        self.acquire_many(1).await
+    }
+
+    /// Acquire N permits (partition-weighted). Held for the entire query stream lifetime.
+    pub async fn acquire_many(&self, n: u32) -> OwnedSemaphorePermit {
         let start = Instant::now();
-        let permit = self.semaphore.clone().acquire_owned().await
+        let permit = self.semaphore.clone().acquire_many_owned(n).await
             .expect("concurrency gate semaphore closed");
         let elapsed_ms = start.elapsed().as_millis() as u64;
         self.total_wait_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
