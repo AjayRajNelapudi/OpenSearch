@@ -622,6 +622,14 @@ pub async unsafe fn execute_local_plan(
     // `context_id` of 0 disables tracking (pool is not consulted).
     let query_context = QueryTrackingContext::new(context_id, session.memory_pool());
 
+    // Acquire concurrency gate permit BEFORE executing the plan.
+    // LocalSession uses DataFusion's default target_partitions (= num_cpus on the host).
+    // We use num_cpus as the weight since that's what DataFusion will spawn.
+    let partition_weight = (num_cpus::get() as u32).max(1);
+    let cpu_exec = manager.cpu_executor();
+    let gate = cpu_exec.concurrency_gate();
+    let permit = gate.acquire_many(partition_weight.min(gate.max_permits())).await;
+
     let df_stream = session.execute_substrait(substrait_bytes).await?;
 
     // Wrap the output in the same CrossRtStream + RecordBatchStreamAdapter
@@ -631,7 +639,7 @@ pub async unsafe fn execute_local_plan(
         CrossRtStream::new_with_df_error_stream(df_stream, manager.cpu_executor());
     let wrapped = RecordBatchStreamAdapter::new(cross_rt_stream.schema(), cross_rt_stream);
 
-    let handle = QueryStreamHandle::new(wrapped, query_context, None);
+    let handle = QueryStreamHandle::new(wrapped, query_context, Some(permit));
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
 
