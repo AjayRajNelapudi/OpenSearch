@@ -73,17 +73,22 @@ pub struct QueryStreamHandle {
     /// The physical plan may reference state (e.g. RuntimeEnv, caches) owned
     /// by the session; dropping it prematurely causes use-after-free.
     _session_ctx: Option<datafusion::prelude::SessionContext>,
+    /// Concurrency gate permit — held for the query's entire lifetime.
+    /// Released on drop, which frees partition budget for other queries.
+    _concurrency_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl QueryStreamHandle {
     pub fn new(
         stream: RecordBatchStreamAdapter<CrossRtStream>,
         query_context: QueryTrackingContext,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> Self {
         Self {
             stream,
             _query_tracking_context: query_context,
             _session_ctx: None,
+            _concurrency_permit: permit,
         }
     }
 
@@ -91,11 +96,13 @@ impl QueryStreamHandle {
         stream: RecordBatchStreamAdapter<CrossRtStream>,
         query_context: QueryTrackingContext,
         ctx: datafusion::prelude::SessionContext,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> Self {
         Self {
             stream,
             _query_tracking_context: query_context,
             _session_ctx: Some(ctx),
+            _concurrency_permit: permit,
         }
     }
 }
@@ -313,6 +320,12 @@ pub async unsafe fn execute_query(
     // Register cancellation token.
     let token = query_tracker::get_cancellation_token(context_id);
 
+    // Acquire concurrency gate permit BEFORE executing the query.
+    // This blocks until partition budget is available, preventing
+    // unbounded partition task accumulation on the CPU runtime.
+    let partition_weight = query_config.target_partitions.max(1) as u32;
+    let permit = cpu_executor.concurrency_gate().acquire_many(partition_weight).await;
+
     let query_future = async {
         if is_indexed {
             let qc = Arc::new(query_config);
@@ -346,7 +359,7 @@ pub async unsafe fn execute_query(
 
     // Reconstruct the stream from the raw pointer returned by the executor.
     let stream = *Box::from_raw(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>);
-    let handle = QueryStreamHandle::new(stream, query_context);
+    let handle = QueryStreamHandle::new(stream, query_context, Some(permit));
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
 
@@ -615,10 +628,10 @@ pub async unsafe fn execute_local_plan(
     // shape as `execute_query`, so existing `stream_next` / `stream_close`
     // drain this handle unchanged.
     let cross_rt_stream =
-        CrossRtStream::new_with_df_error_stream(df_stream, manager.cpu_executor(), 1);
+        CrossRtStream::new_with_df_error_stream(df_stream, manager.cpu_executor());
     let wrapped = RecordBatchStreamAdapter::new(cross_rt_stream.schema(), cross_rt_stream);
 
-    let handle = QueryStreamHandle::new(wrapped, query_context);
+    let handle = QueryStreamHandle::new(wrapped, query_context, None);
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
 
