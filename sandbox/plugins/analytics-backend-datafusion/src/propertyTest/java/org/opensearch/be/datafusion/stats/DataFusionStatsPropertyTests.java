@@ -97,12 +97,15 @@ public class DataFusionStatsPropertyTests {
                 );
             }
             return rt;
-        }), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats()).as((io, cpu, qe, sn, fp, ss) -> {
+        }), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats()).as((io, cpu, qe, sn, fp, cc, ppp, pfp, sts) -> {
             Map<String, TaskMonitorStats> monitors = new LinkedHashMap<>();
             monitors.put("query_execution", qe);
             monitors.put("stream_next", sn);
             monitors.put("fetch_phase", fp);
-            monitors.put("segment_stats", ss);
+            monitors.put("create_context", cc);
+            monitors.put("prepare_partial_plan", ppp);
+            monitors.put("prepare_final_plan", pfp);
+            monitors.put("sql_to_substrait", sts);
             return new DataFusionStats(new NativeExecutorsStats(io, cpu, monitors), null);
         });
     }
@@ -110,13 +113,16 @@ public class DataFusionStatsPropertyTests {
     /** DataFusionStats with CPU runtime absent (null). */
     @Provide
     Arbitrary<DataFusionStats> dataFusionStatsCpuAbsent() {
-        return Combinators.combine(runtimeMetrics(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats())
-            .as((io, qe, sn, fp, ss) -> {
+        return Combinators.combine(runtimeMetrics(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats(), taskMonitorStats())
+            .as((io, qe, sn, fp, cc, ppp, pfp, sts) -> {
                 Map<String, TaskMonitorStats> monitors = new LinkedHashMap<>();
                 monitors.put("query_execution", qe);
                 monitors.put("stream_next", sn);
                 monitors.put("fetch_phase", fp);
-                monitors.put("segment_stats", ss);
+                monitors.put("create_context", cc);
+                monitors.put("prepare_partial_plan", ppp);
+                monitors.put("prepare_final_plan", pfp);
+                monitors.put("sql_to_substrait", sts);
                 return new DataFusionStats(new NativeExecutorsStats(io, null, monitors), null);
             });
     }
