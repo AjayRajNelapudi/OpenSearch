@@ -52,7 +52,7 @@ impl RuntimeManager {
         // parallelism but increase scheduling contention. Benchmarked sweet spot is
         // 1.0x-1.5x cpu_threads. Currently set to 1.2x based on saturation benchmarks
         // showing best latency consistency across concurrency levels.
-        const CONCURRENCY_MULTIPLIER: f64 = 1.2;
+        const CONCURRENCY_MULTIPLIER: f64 = 1.0;
         let max_concurrent = (cpu_threads as f64 * CONCURRENCY_MULTIPLIER) as usize;
         let cpu_executor = DedicatedExecutor::new("datafusion-cpu", cpu_runtime_builder, max_concurrent);
 
