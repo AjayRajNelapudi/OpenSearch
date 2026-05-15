@@ -216,22 +216,8 @@ pub unsafe extern "C" fn df_stream_get_schema(stream_ptr: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn df_stream_next(stream_ptr: i64) -> i64 {
     let mgr = get_rt_manager()?;
-    let stream_handle = &*(stream_ptr as *const crate::api::QueryStreamHandle);
-    let partition_weight = stream_handle.partition_weight();
     mgr.io_runtime
-        .block_on(async {
-            // Acquire per-batch concurrency gate permit before polling the stream.
-            // The permit is released after the batch is produced (or on end-of-stream).
-            // Skip gate acquire when partition_weight is 0 (e.g. local prepared plans).
-            let _permit = if partition_weight > 0 {
-                let gate = mgr.cpu_executor().concurrency_gate().clone();
-                let max_p = gate.max_permits();
-                Some(gate.acquire_many(partition_weight.min(max_p)).await)
-            } else {
-                None
-            };
-            crate::task_monitors::stream_next_monitor().instrument(api::stream_next(stream_ptr)).await
-        })
+        .block_on(crate::task_monitors::stream_next_monitor().instrument(api::stream_next(stream_ptr)))
         .map_err(|e| e.to_string())
 }
 
@@ -750,26 +736,35 @@ pub unsafe extern "C" fn df_execute_with_context(
                 let partition_weight = session_handle.ctx.state().config().target_partitions().max(1) as u32;
                 let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
                 let max_p = gate.max_permits();
+                eprintln!("[DIAG-GATE] thread={:?} BEFORE acquire_many({}) max_permits={} available={}",
+                    std::thread::current().id(),
+                    partition_weight.min(max_p),
+                    max_p,
+                    gate.available_permits());
                 let permit = gate.acquire_many(partition_weight.min(max_p)).await;
+                eprintln!("[DIAG-GATE] thread={:?} AFTER acquire_many — got permit, available_now={}",
+                    std::thread::current().id(),
+                    gate.available_permits());
 
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
                     crate::query_executor::execute_with_context(
                         session_handle,
                         &plan_vec,
                         cpu_for_cross,
-                        partition_weight,
+                        permit,
                     )
                     .await
                 });
+                eprintln!("[DIAG-GATE] thread={:?} BEFORE cpu_executor.spawn()",
+                    std::thread::current().id());
                 let result = match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
                     Ok(inner) => inner,
                     Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
                         "df_execute_with_context: CPU spawn failed: {e:?}"
                     ))),
                 };
-                // permit dropped here — gate freed after spawn/plan-setup completes.
-                // Subsequent stream_next calls re-acquire per batch.
-                drop(permit);
+                eprintln!("[DIAG-GATE] thread={:?} AFTER cpu_executor.spawn() completed",
+                    std::thread::current().id());
                 result
             })
             .map_err(|e| e.to_string())
@@ -926,6 +921,6 @@ pub unsafe extern "C" fn df_execute_local_prepared_plan(session_ptr: i64) -> i64
         cross_rt_stream,
     );
     let query_context = crate::query_tracker::QueryTrackingContext::new(0, session.memory_pool());
-    let handle = crate::api::QueryStreamHandle::new(wrapped, query_context, 0);
+    let handle = crate::api::QueryStreamHandle::new(wrapped, query_context, None);
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }

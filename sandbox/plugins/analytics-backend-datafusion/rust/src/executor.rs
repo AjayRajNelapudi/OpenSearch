@@ -52,12 +52,12 @@ impl ConcurrencyGate {
         }
     }
 
-    /// Acquire a permit. Released when the returned permit is dropped.
+    /// Acquire a permit. Held for the entire query stream lifetime.
     pub async fn acquire(&self) -> OwnedSemaphorePermit {
         self.acquire_many(1).await
     }
 
-    /// Acquire N permits (partition-weighted). Released when the returned permit is dropped.
+    /// Acquire N permits (partition-weighted). Held for the entire query stream lifetime.
     pub async fn acquire_many(&self, n: u32) -> OwnedSemaphorePermit {
         let start = Instant::now();
         let permit = self.semaphore.clone().acquire_many_owned(n).await
@@ -74,6 +74,10 @@ impl ConcurrencyGate {
 
     pub fn active_permits(&self) -> u32 {
         self.max_permits - self.semaphore.available_permits() as u32
+    }
+
+    pub fn available_permits(&self) -> u32 {
+        self.semaphore.available_permits() as u32
     }
 
     pub fn total_wait_ms(&self) -> u64 {
