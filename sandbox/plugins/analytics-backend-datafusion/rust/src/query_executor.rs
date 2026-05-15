@@ -8,12 +8,14 @@
 
 use std::sync::Arc;
 
+use native_bridge_common::log_debug;
 use datafusion::{
     common::DataFusionError,
     datasource::listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     execution::context::SessionContext,
     execution::runtime_env::RuntimeEnvBuilder,
     execution::SessionStateBuilder,
+    physical_plan::displayable,
     physical_plan::execute_stream,
     prelude::*,
 };
@@ -23,6 +25,7 @@ use datafusion::execution::cache::{CacheAccessor, DefaultListFilesCache};
 use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
 use log::error;
 use object_store::ObjectMeta;
+use object_store::ObjectStore;
 use prost::Message;
 use substrait::proto::Plan;
 
@@ -51,6 +54,7 @@ pub async fn execute_query(
     // wire up context_id correctly.
     query_memory_pool: Option<Arc<dyn datafusion::execution::memory_pool::MemoryPool>>,
     query_config: &crate::datafusion_query_config::DatafusionQueryConfig,
+    shard_store: Arc<dyn ObjectStore>,
 ) -> Result<i64, DataFusionError> {
     // Pre-populate the list-files cache so DataFusion doesn't re-list the directory
     let list_file_cache = Arc::new(DefaultListFilesCache::default());
@@ -87,6 +91,13 @@ pub async fn execute_query(
             e
         })?;
 
+    // Register shard-specific object store on file:// scheme for this query.
+    // Routes reads through TieredObjectStore (local + remote) or default LocalFileSystem.
+    runtime_env.register_object_store(
+        &url::Url::parse("file://").unwrap(),
+        shard_store,
+    );
+
     // Build a fresh session state per query. TODO : Tune this during planning per query
     let mut config = SessionConfig::new();
     config.options_mut().execution.parquet.pushdown_filters = query_config.parquet_pushdown_filters;
@@ -115,6 +126,7 @@ pub async fn execute_query(
             error!("Failed to infer schema: {}", e);
             e
         })?;
+    eprintln!("[DIAG] query_executor::execute_query schema inferred thread={:?}", std::thread::current().id());
 
     let table_config = ListingTableConfig::new(table_path)
         .with_listing_options(listing_options)
@@ -135,14 +147,22 @@ pub async fn execute_query(
         DataFusionError::Execution(format!("Failed to decode Substrait: {}", e))
     })?;
 
+    eprintln!("[DIAG] query_executor::execute_query substrait decoded thread={:?}", std::thread::current().id());
+
     let logical_plan = from_substrait_plan(&ctx.state(), &substrait_plan).await?;
+    eprintln!("[DIAG] query_executor::execute_query logical_plan created thread={:?}", std::thread::current().id());
+
     let dataframe = ctx.execute_logical_plan(logical_plan).await?;
+    eprintln!("[DIAG] query_executor::execute_query dataframe created thread={:?}", std::thread::current().id());
+
     let physical_plan = dataframe.create_physical_plan().await?;
+    eprintln!("[DIAG] query_executor::execute_query physical_plan created thread={:?}", std::thread::current().id());
 
     let df_stream = execute_stream(physical_plan, ctx.task_ctx()).map_err(|e| {
         error!("Failed to create execution stream: {}", e);
         e
     })?;
+    eprintln!("[DIAG] query_executor::execute_query stream created thread={:?}", std::thread::current().id());
 
     // Wrap in CrossRtStream — CPU work runs on DedicatedExecutor
     let cross_rt_stream =
@@ -165,15 +185,27 @@ pub async fn execute_with_context(
     handle: SessionContextHandle,
     plan_bytes: &[u8],
     cpu_executor: DedicatedExecutor,
-    permit: tokio::sync::OwnedSemaphorePermit,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    effective_partitions: u32,
 ) -> Result<i64, DataFusionError> {
+    eprintln!("[DIAG pid={}] execute_with_context ENTER effective_partitions={} thread={:?}",
+        std::process::id(), effective_partitions, std::thread::current().id());
+
     let substrait_plan = Plan::decode(plan_bytes).map_err(|e| {
         DataFusionError::Execution(format!("Failed to decode Substrait: {}", e))
     })?;
+    eprintln!("[DIAG pid={}] execute_with_context substrait decoded thread={:?}", std::process::id(), std::thread::current().id());
 
     let logical_plan = from_substrait_plan(&handle.ctx.state(), &substrait_plan).await?;
+    log_debug!("DataFusion logical plan:\n{}", logical_plan.display_indent());
+    eprintln!("[DIAG pid={}] execute_with_context logical_plan created thread={:?}", std::process::id(), std::thread::current().id());
+
     let dataframe = handle.ctx.execute_logical_plan(logical_plan).await?;
+    eprintln!("[DIAG pid={}] execute_with_context dataframe created thread={:?}", std::process::id(), std::thread::current().id());
+
     let physical_plan = dataframe.create_physical_plan().await?;
+    log_debug!("DataFusion physical plan:\n{}", displayable(physical_plan.as_ref()).indent(true));
+    eprintln!("[DIAG pid={}] execute_with_context physical_plan created thread={:?}", std::process::id(), std::thread::current().id());
 
     // Permit was acquired by the caller (ffm.rs) before spawning on the CPU
     // runtime, so the Java search thread blocks at the gate. The permit is
@@ -183,6 +215,7 @@ pub async fn execute_with_context(
         error!("execute_with_context: failed to create stream: {}", e);
         e
     })?;
+    eprintln!("[DIAG pid={}] execute_with_context stream created thread={:?}", std::process::id(), std::thread::current().id());
 
     let cross_rt_stream = CrossRtStream::new_with_df_error_stream(df_stream, cpu_executor);
     let wrapped = datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
@@ -190,6 +223,6 @@ pub async fn execute_with_context(
         cross_rt_stream,
     );
 
-    let stream_handle = crate::api::QueryStreamHandle::with_session_context(wrapped, handle.query_context, handle.ctx, Some(permit));
+    let stream_handle = crate::api::QueryStreamHandle::with_session_context(wrapped, handle.query_context, handle.ctx, permit);
     Ok(Box::into_raw(Box::new(stream_handle)) as i64)
 }

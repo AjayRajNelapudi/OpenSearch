@@ -21,7 +21,9 @@
 
 use std::sync::Arc;
 
+use native_bridge_common::log_debug;
 use datafusion::{
+    physical_plan::displayable,
     physical_plan::execute_stream,
     execution::SessionStateBuilder,
     execution::runtime_env::RuntimeEnvBuilder,
@@ -123,6 +125,12 @@ pub async fn execute_indexed_query(
         .build()
         .map_err(|e| DataFusionError::Execution(format!("runtime env: {}", e)))?;
 
+    // Register shard-specific object store on file:// scheme for this query.
+    runtime_env.register_object_store(
+        &url::Url::parse("file://").unwrap(),
+        Arc::clone(&shard_view.store),
+    );
+
     let mut config = SessionConfig::new();
     config.options_mut().execution.parquet.pushdown_filters = query_config.parquet_pushdown_filters;
     // Indexed path fans out via IndexedExec partitions (derived from
@@ -167,7 +175,14 @@ pub async fn execute_indexed_query(
         prepared_plan: None,
     };
     let ptr = Box::into_raw(Box::new(handle)) as i64;
-    unsafe { execute_indexed_with_context(ptr, substrait_bytes, cpu_executor).await }
+
+    // Non-blocking adaptive acquire (same as FFM entry point).
+    let partition_weight = num_partitions.max(1) as u32;
+    let gate = cpu_executor.concurrency_gate().clone();
+    let max_p = gate.max_permits();
+    let (_effective, permit) = gate.try_acquire_adaptive(partition_weight.min(max_p));
+
+    unsafe { execute_indexed_with_context(ptr, substrait_bytes, cpu_executor, permit).await }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -404,6 +419,7 @@ pub async unsafe fn execute_indexed_with_context(
     session_ctx_ptr: i64,
     substrait_bytes: Vec<u8>,
     cpu_executor: DedicatedExecutor,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<i64, DataFusionError> {
     let handle = *Box::from_raw(session_ctx_ptr as *mut crate::session_context::SessionContextHandle);
     let classification_override = handle.indexed_config.map(|config| {
@@ -427,10 +443,8 @@ pub async unsafe fn execute_indexed_with_context(
     // with IndexedTableProvider after plan decoding.
     ctx.deregister_table(&table_name)?;
 
-    let store = ctx
-        .state()
-        .runtime_env()
-        .object_store(&table_path)?;
+    let state = ctx.state();
+    let store = state.runtime_env().object_store(&table_path)?;
 
     let (segments, schema) = build_segments(Arc::clone(&store), object_metas.as_ref())
         .await
@@ -685,14 +699,16 @@ pub async unsafe fn execute_indexed_with_context(
     ctx.register_table(&table_name, provider)?;
 
     let logical_plan = from_substrait_plan(&ctx.state(), &plan).await?;
+    log_debug!("DataFusion logical plan:\n{}", logical_plan.display_indent());
     let dataframe = ctx.execute_logical_plan(logical_plan).await?;
     let physical_plan = dataframe.create_physical_plan().await?;
+    log_debug!("DataFusion physical plan:\n{}", displayable(physical_plan.as_ref()).indent(true));
     let df_stream = execute_stream(physical_plan, ctx.task_ctx())
         .map_err(|e| DataFusionError::Execution(format!("execute_stream: {}", e)))?;
 
     let cross_rt_stream = CrossRtStream::new_with_df_error_stream(df_stream, cpu_executor);
     let schema = cross_rt_stream.schema();
     let wrapped = RecordBatchStreamAdapter::new(schema, cross_rt_stream);
-    let stream_handle = crate::api::QueryStreamHandle::with_session_context(wrapped, query_context, ctx, None);
+    let stream_handle = crate::api::QueryStreamHandle::with_session_context(wrapped, query_context, ctx, permit);
     Ok(Box::into_raw(Box::new(stream_handle)) as i64)
 }
