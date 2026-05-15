@@ -736,7 +736,15 @@ pub unsafe extern "C" fn df_execute_with_context(
                 let partition_weight = session_handle.ctx.state().config().target_partitions().max(1) as u32;
                 let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
                 let max_p = gate.max_permits();
+                eprintln!("[DIAG-GATE] thread={:?} BEFORE acquire_many({}) max_permits={} available={}",
+                    std::thread::current().id(),
+                    partition_weight.min(max_p),
+                    max_p,
+                    gate.available_permits());
                 let permit = gate.acquire_many(partition_weight.min(max_p)).await;
+                eprintln!("[DIAG-GATE] thread={:?} AFTER acquire_many — got permit, available_now={}",
+                    std::thread::current().id(),
+                    gate.available_permits());
 
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
                     crate::query_executor::execute_with_context(
@@ -747,12 +755,17 @@ pub unsafe extern "C" fn df_execute_with_context(
                     )
                     .await
                 });
-                match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
+                eprintln!("[DIAG-GATE] thread={:?} BEFORE cpu_executor.spawn()",
+                    std::thread::current().id());
+                let result = match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
                     Ok(inner) => inner,
                     Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
                         "df_execute_with_context: CPU spawn failed: {e:?}"
                     ))),
-                }
+                };
+                eprintln!("[DIAG-GATE] thread={:?} AFTER cpu_executor.spawn() completed",
+                    std::thread::current().id());
+                result
             })
             .map_err(|e| e.to_string())
     }

@@ -76,6 +76,10 @@ impl ConcurrencyGate {
         self.max_permits - self.semaphore.available_permits() as u32
     }
 
+    pub fn available_permits(&self) -> u32 {
+        self.semaphore.available_permits() as u32
+    }
+
     pub fn total_wait_ms(&self) -> u64 {
         self.total_wait_ms.load(Ordering::Relaxed)
     }
