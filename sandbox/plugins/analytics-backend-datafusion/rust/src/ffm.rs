@@ -719,39 +719,30 @@ pub unsafe extern "C" fn df_execute_with_context(
         // TODO: refactor execute_indexed_with_context to take SessionContextHandle directly
         let ptr = Box::into_raw(Box::new(session_handle)) as i64;
         mgr.io_runtime
-            .block_on(crate::task_monitors::query_execution_monitor().instrument(
-                crate::indexed_executor::execute_indexed_with_context(
-                    ptr,
-                    plan_vec.clone(),
-                    cpu_executor,
-                )
-            ))
+            .block_on(async move {
+                let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
+                    crate::indexed_executor::execute_indexed_with_context(
+                        ptr,
+                        plan_vec,
+                        cpu_for_cross,
+                    ).await
+                });
+                match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
+                    Ok(inner) => inner,
+                    Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
+                        "df_execute_with_context: CPU spawn failed: {e:?}"
+                    ))),
+                }
+            })
             .map_err(|e| e.to_string())
     } else {
         mgr.io_runtime
             .block_on(async move {
-                // Acquire concurrency gate BEFORE spawning on CPU runtime.
-                // This blocks the IO runtime thread (and thus the Java search thread),
-                // creating backpressure at the Java threadpool level when the gate is full.
-                let partition_weight = session_handle.ctx.state().config().target_partitions().max(1) as u32;
-                let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
-                let max_p = gate.max_permits();
-                eprintln!("[DIAG-GATE] thread={:?} BEFORE acquire_many({}) max_permits={} available={}",
-                    std::thread::current().id(),
-                    partition_weight.min(max_p),
-                    max_p,
-                    gate.available_permits());
-                let permit = gate.acquire_many(partition_weight.min(max_p)).await;
-                eprintln!("[DIAG-GATE] thread={:?} AFTER acquire_many — got permit, available_now={}",
-                    std::thread::current().id(),
-                    gate.available_permits());
-
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
                     crate::query_executor::execute_with_context(
                         session_handle,
                         &plan_vec,
                         cpu_for_cross,
-                        permit,
                     )
                     .await
                 });
