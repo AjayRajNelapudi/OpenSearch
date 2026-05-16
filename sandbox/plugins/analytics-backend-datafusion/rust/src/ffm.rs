@@ -746,16 +746,12 @@ pub unsafe extern "C" fn df_execute_with_context(
                     )
                     .await
                 });
-                eprintln!("[DIAG-GATE] thread={:?} BEFORE cpu_executor.spawn()",
-                    std::thread::current().id());
                 let result = match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
                     Ok(inner) => inner,
                     Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
                         "df_execute_with_context: CPU spawn failed: {e:?}"
                     ))),
                 };
-                eprintln!("[DIAG-GATE] thread={:?} AFTER cpu_executor.spawn() completed",
-                    std::thread::current().id());
                 result
             })
             .map_err(|e| e.to_string())
