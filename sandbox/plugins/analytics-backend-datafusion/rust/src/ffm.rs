@@ -123,7 +123,6 @@ pub unsafe extern "C" fn df_create_reader(
     files_ptr: *const *const u8,
     files_len_ptr: *const i64,
     files_count: i64,
-    store_ptr: i64,
 ) -> i64 {
     let table_path = str_from_raw(table_path_ptr, table_path_len)
         .map_err(|e| format!("df_create_reader: {}", e))?;
@@ -138,7 +137,7 @@ pub unsafe extern "C" fn df_create_reader(
         );
     }
     let mgr = get_rt_manager()?;
-    api::create_reader(table_path, filenames, &mgr, store_ptr).map_err(|e| e.to_string())
+    api::create_reader(table_path, filenames, &mgr, 0).map_err(|e| e.to_string())
 }
 
 #[no_mangle]
@@ -717,25 +716,15 @@ pub unsafe extern "C" fn df_execute_with_context(
 
     // Route based on whether the session was configured for indexed execution
     if session_handle.indexed_config.is_some() {
-        // Extract target_partitions BEFORE boxing into raw pointer (session_handle is consumed).
-        let partition_weight = session_handle.query_config.target_partitions.max(1) as u32;
         // TODO: refactor execute_indexed_with_context to take SessionContextHandle directly
         let ptr = Box::into_raw(Box::new(session_handle)) as i64;
         mgr.io_runtime
             .block_on(async move {
-                // Acquire concurrency gate BEFORE spawning on CPU runtime (same as vanilla).
-                // This blocks the IO runtime thread (and thus the Java search thread),
-                // creating backpressure at the Java threadpool level when the gate is full.
-                let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
-                let max_p = gate.max_permits();
-                let permit = gate.acquire_many(partition_weight.min(max_p)).await;
-
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
                     crate::indexed_executor::execute_indexed_with_context(
                         ptr,
                         plan_vec,
                         cpu_for_cross,
-                        permit,
                     ).await
                 });
                 match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
@@ -749,29 +738,25 @@ pub unsafe extern "C" fn df_execute_with_context(
     } else {
         mgr.io_runtime
             .block_on(async move {
-                // Acquire concurrency gate BEFORE spawning on CPU runtime.
-                // This blocks the IO runtime thread (and thus the Java search thread),
-                // creating backpressure at the Java threadpool level when the gate is full.
-                let partition_weight = session_handle.ctx.state().config().target_partitions().max(1) as u32;
-                let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
-                let max_p = gate.max_permits();
-                let permit = gate.acquire_many(partition_weight.min(max_p)).await;
-
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
                     crate::query_executor::execute_with_context(
                         session_handle,
                         &plan_vec,
                         cpu_for_cross,
-                        permit,
                     )
                     .await
                 });
-                match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
+                eprintln!("[DIAG-GATE] thread={:?} BEFORE cpu_executor.spawn()",
+                    std::thread::current().id());
+                let result = match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
                     Ok(inner) => inner,
                     Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
                         "df_execute_with_context: CPU spawn failed: {e:?}"
                     ))),
-                }
+                };
+                eprintln!("[DIAG-GATE] thread={:?} AFTER cpu_executor.spawn() completed",
+                    std::thread::current().id());
+                result
             })
             .map_err(|e| e.to_string())
     }
