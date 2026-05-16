@@ -39,6 +39,9 @@ pub struct ConcurrencyGate {
     max_permits: u32,
     total_wait_ms: AtomicU64,
     total_queries_admitted: AtomicU64,
+    full_acquires: AtomicU64,
+    partial_acquires: AtomicU64,
+    degraded_acquires: AtomicU64,
 }
 
 impl ConcurrencyGate {
@@ -49,6 +52,9 @@ impl ConcurrencyGate {
             max_permits: permits as u32,
             total_wait_ms: AtomicU64::new(0),
             total_queries_admitted: AtomicU64::new(0),
+            full_acquires: AtomicU64::new(0),
+            partial_acquires: AtomicU64::new(0),
+            degraded_acquires: AtomicU64::new(0),
         }
     }
 
@@ -86,6 +92,7 @@ impl ConcurrencyGate {
             eprintln!("[DIAG pid={}] ConcurrencyGate::try_acquire_adaptive({}) FULL granted={} thread={:?}",
                 pid, requested, clamped, std::thread::current().id());
             self.total_queries_admitted.fetch_add(1, Ordering::Relaxed);
+            self.full_acquires.fetch_add(1, Ordering::Relaxed);
             return (clamped, Some(permit));
         }
 
@@ -95,6 +102,7 @@ impl ConcurrencyGate {
             eprintln!("[DIAG pid={}] ConcurrencyGate::try_acquire_adaptive({}) PARTIAL granted={} thread={:?}",
                 pid, requested, available, std::thread::current().id());
             self.total_queries_admitted.fetch_add(1, Ordering::Relaxed);
+            self.partial_acquires.fetch_add(1, Ordering::Relaxed);
             return (available, Some(permit));
         }
 
@@ -102,6 +110,7 @@ impl ConcurrencyGate {
         eprintln!("[DIAG pid={}] ConcurrencyGate::try_acquire_adaptive({}) DEGRADED granted=0 effective=1 thread={:?}",
             pid, requested, std::thread::current().id());
         self.total_queries_admitted.fetch_add(1, Ordering::Relaxed);
+        self.degraded_acquires.fetch_add(1, Ordering::Relaxed);
         (1, None)
     }
 
@@ -119,6 +128,18 @@ impl ConcurrencyGate {
 
     pub fn total_queries_admitted(&self) -> u64 {
         self.total_queries_admitted.load(Ordering::Relaxed)
+    }
+
+    pub fn full_acquires(&self) -> u64 {
+        self.full_acquires.load(Ordering::Relaxed)
+    }
+
+    pub fn partial_acquires(&self) -> u64 {
+        self.partial_acquires.load(Ordering::Relaxed)
+    }
+
+    pub fn degraded_acquires(&self) -> u64 {
+        self.degraded_acquires.load(Ordering::Relaxed)
     }
 }
 

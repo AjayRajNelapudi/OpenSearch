@@ -38,19 +38,24 @@ public class PartitionGateStats implements Writeable, ToXContentFragment {
     /** Cumulative count of batches started (permits granted) since startup. */
     public final long totalBatchesStarted;
 
-    /**
-     * Construct from explicit field values.
-     *
-     * @param maxPermits          total semaphore capacity
-     * @param activePermits       currently held permits
-     * @param totalWaitDurationMs cumulative wait time in milliseconds
-     * @param totalBatchesStarted cumulative batches started
-     */
-    public PartitionGateStats(long maxPermits, long activePermits, long totalWaitDurationMs, long totalBatchesStarted) {
+    /** Cumulative count of FULL acquires (got all requested permits). */
+    public final long fullAcquires;
+
+    /** Cumulative count of PARTIAL acquires (got fewer than requested). */
+    public final long partialAcquires;
+
+    /** Cumulative count of DEGRADED acquires (no permit, ran with 1 partition). */
+    public final long degradedAcquires;
+
+    public PartitionGateStats(long maxPermits, long activePermits, long totalWaitDurationMs, long totalBatchesStarted,
+                              long fullAcquires, long partialAcquires, long degradedAcquires) {
         this.maxPermits = maxPermits;
         this.activePermits = activePermits;
         this.totalWaitDurationMs = totalWaitDurationMs;
         this.totalBatchesStarted = totalBatchesStarted;
+        this.fullAcquires = fullAcquires;
+        this.partialAcquires = partialAcquires;
+        this.degradedAcquires = degradedAcquires;
     }
 
     /**
@@ -64,6 +69,9 @@ public class PartitionGateStats implements Writeable, ToXContentFragment {
         this.activePermits = in.readVLong();
         this.totalWaitDurationMs = in.readVLong();
         this.totalBatchesStarted = in.readVLong();
+        this.fullAcquires = in.readVLong();
+        this.partialAcquires = in.readVLong();
+        this.degradedAcquires = in.readVLong();
     }
 
     @Override
@@ -72,6 +80,9 @@ public class PartitionGateStats implements Writeable, ToXContentFragment {
         out.writeVLong(activePermits);
         out.writeVLong(totalWaitDurationMs);
         out.writeVLong(totalBatchesStarted);
+        out.writeVLong(fullAcquires);
+        out.writeVLong(partialAcquires);
+        out.writeVLong(degradedAcquires);
     }
 
     @Override
@@ -81,6 +92,9 @@ public class PartitionGateStats implements Writeable, ToXContentFragment {
         builder.field("active_permits", activePermits);
         builder.field("total_wait_duration_ms", totalWaitDurationMs);
         builder.field("total_batches_started", totalBatchesStarted);
+        builder.field("full_acquires", fullAcquires);
+        builder.field("partial_acquires", partialAcquires);
+        builder.field("degraded_acquires", degradedAcquires);
         builder.endObject();
         return builder;
     }
@@ -93,11 +107,15 @@ public class PartitionGateStats implements Writeable, ToXContentFragment {
         return maxPermits == that.maxPermits
             && activePermits == that.activePermits
             && totalWaitDurationMs == that.totalWaitDurationMs
-            && totalBatchesStarted == that.totalBatchesStarted;
+            && totalBatchesStarted == that.totalBatchesStarted
+            && fullAcquires == that.fullAcquires
+            && partialAcquires == that.partialAcquires
+            && degradedAcquires == that.degradedAcquires;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(maxPermits, activePermits, totalWaitDurationMs, totalBatchesStarted);
+        return Objects.hash(maxPermits, activePermits, totalWaitDurationMs, totalBatchesStarted,
+            fullAcquires, partialAcquires, degradedAcquires);
     }
 }
