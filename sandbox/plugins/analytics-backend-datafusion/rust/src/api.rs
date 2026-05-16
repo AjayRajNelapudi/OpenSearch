@@ -52,7 +52,7 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionConfig;
 use futures::TryStreamExt;
-use object_store::{ObjectStore, ObjectStoreExt};
+use object_store::ObjectStoreExt;
 
 use crate::cancellation;
 use crate::cross_rt_stream::CrossRtStream;
@@ -157,10 +157,6 @@ impl DataFusionRuntime {
 pub struct ShardView {
     pub table_path: ListingTableUrl,
     pub object_metas: Arc<Vec<object_store::ObjectMeta>>,
-    /// Per-shard object store. When a native store is provided (store_ptr > 0),
-    /// this routes reads through TieredObjectStore (local + remote).
-    /// When no store is provided, uses default LocalFileSystem.
-    pub store: Arc<dyn ObjectStore>,
 }
 
 /// Creates a DataFusion global runtime with the given resource limits.
@@ -261,29 +257,19 @@ pub unsafe fn set_memory_pool_limit(ptr: i64, new_limit: i64) -> Result<(), Stri
 ///
 /// Returns a heap-allocated pointer (as i64) to `ShardView`.
 /// Caller must call `close_reader` exactly once to free it.
-///
-/// `store_ptr`: 0 = use default LocalFileSystem (hot path),
-/// >0 = Box<Arc<dyn ObjectStore>> pointer (routes reads through TieredObjectStore).
 pub fn create_reader(
     table_path: &str,
     mut filenames: Vec<String>,
     tokio_rt_manager: &RuntimeManager,
-    store_ptr: i64,
 ) -> Result<i64, DataFusionError> {
     filenames.sort();
 
     let table_url = ListingTableUrl::parse(table_path)
         .map_err(|e| DataFusionError::Execution(format!("Invalid table path: {}", e)))?;
 
-    // Resolve the object store: if store_ptr > 0, clone the Arc from the boxed pointer.
-    // Otherwise use default LocalFileSystem.
-    let store: Arc<dyn ObjectStore> = if store_ptr > 0 {
-        let boxed = unsafe { &*(store_ptr as *const Arc<dyn ObjectStore>) };
-        Arc::clone(boxed)
-    } else {
-        let default_rt = RuntimeEnvBuilder::new().build()?;
-        default_rt.object_store(&table_url)?
-    };
+    // TODO: use global runtime's object store instead of building a throwaway RuntimeEnv
+    let default_rt = RuntimeEnvBuilder::new().build()?;
+    let store = default_rt.object_store(&table_url)?;
 
     let object_metas = tokio_rt_manager.io_runtime.block_on(create_object_metas(
         store.as_ref(),
@@ -294,7 +280,6 @@ pub fn create_reader(
     let shard_view = ShardView {
         table_path: table_url,
         object_metas: Arc::new(object_metas),
-        store,
     };
     Ok(Box::into_raw(Box::new(shard_view)) as i64)
 }
@@ -348,18 +333,10 @@ pub async unsafe fn execute_query(
     let token = query_tracker::get_cancellation_token(context_id);
 
     // Acquire concurrency gate permit BEFORE executing the query.
-    // Non-blocking adaptive acquire: if full budget unavailable, degrade partition
-    // count rather than blocking (which would deadlock under circular dependencies).
+    // This blocks until partition budget is available, preventing
+    // unbounded partition task accumulation on the CPU runtime.
     let partition_weight = query_config.target_partitions.max(1) as u32;
-    let max_p = cpu_executor.concurrency_gate().max_permits();
-    let clamped = partition_weight.min(max_p);
-    let (effective_partitions, permit) = cpu_executor.concurrency_gate().try_acquire_adaptive(clamped);
-    eprintln!("[DIAG] api::execute_query adaptive acquire: requested={} effective={} has_permit={} thread={:?}",
-        clamped, effective_partitions, permit.is_some(), std::thread::current().id());
-
-    // Override target_partitions with effective value for degraded execution
-    let mut query_config = query_config;
-    query_config.target_partitions = effective_partitions as usize;
+    let permit = cpu_executor.concurrency_gate().acquire_many(partition_weight).await;
 
     let query_future = async {
         if is_indexed {
@@ -383,7 +360,6 @@ pub async unsafe fn execute_query(
                 cpu_executor,
                 query_memory_pool,
                 &query_config,
-                Arc::clone(&shard_view.store),
             ).await
         }
     };
@@ -392,14 +368,9 @@ pub async unsafe fn execute_query(
         .await
         .map_err(|e| DataFusionError::Execution(e))?;
 
-    eprintln!("[DIAG] api::execute_query query_future COMPLETED, stream_ptr={} thread={:?}",
-        stream_ptr, std::thread::current().id());
-
     // Reconstruct the stream from the raw pointer returned by the executor.
     let stream = *Box::from_raw(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>);
-    let handle = QueryStreamHandle::new(stream, query_context, permit);
-    eprintln!("[DIAG] api::execute_query returning QueryStreamHandle effective_partitions={} thread={:?}",
-        effective_partitions, std::thread::current().id());
+    let handle = QueryStreamHandle::new(stream, query_context, Some(permit));
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
 
@@ -662,11 +633,13 @@ pub async unsafe fn execute_local_plan(
     // `context_id` of 0 disables tracking (pool is not consulted).
     let query_context = QueryTrackingContext::new(context_id, session.memory_pool());
 
-    // Non-blocking adaptive acquire for local plan execution.
+    // Acquire concurrency gate permit BEFORE executing the plan.
+    // LocalSession uses DataFusion's default target_partitions (= num_cpus on the host).
+    // We use num_cpus as the weight since that's what DataFusion will spawn.
     let partition_weight = (num_cpus::get() as u32).max(1);
     let cpu_exec = manager.cpu_executor();
     let gate = cpu_exec.concurrency_gate();
-    let (_, permit) = gate.try_acquire_adaptive(partition_weight.min(gate.max_permits()));
+    let permit = gate.acquire_many(partition_weight.min(gate.max_permits())).await;
 
     let df_stream = session.execute_substrait(substrait_bytes).await?;
 
@@ -677,7 +650,7 @@ pub async unsafe fn execute_local_plan(
         CrossRtStream::new_with_df_error_stream(df_stream, manager.cpu_executor());
     let wrapped = RecordBatchStreamAdapter::new(cross_rt_stream.schema(), cross_rt_stream);
 
-    let handle = QueryStreamHandle::new(wrapped, query_context, permit);
+    let handle = QueryStreamHandle::new(wrapped, query_context, Some(permit));
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
 
