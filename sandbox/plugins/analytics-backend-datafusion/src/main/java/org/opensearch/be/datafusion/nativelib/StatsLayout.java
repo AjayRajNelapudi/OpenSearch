@@ -23,7 +23,7 @@ import java.lang.invoke.VarHandle;
  * Defines the {@code MemoryLayout.structLayout} mirroring the Rust {@code DfStatsBuffer}
  * and provides {@link VarHandle} accessors for each field via layout path navigation.
  *
- * <p>The layout contains 10 named groups (2 runtime × 9 fields + 7 task monitor × 3 fields + 1 partition gate × 7 fields = 46 longs = 368 bytes).
+ * <p>The layout contains 10 named groups (2 runtime × 9 fields + 7 task monitor × 3 fields + 1 partition gate × 4 fields = 43 longs = 344 bytes).
  */
 public final class StatsLayout {
 
@@ -47,10 +47,7 @@ public final class StatsLayout {
         "max_permits",
         "active_permits",
         "total_wait_duration_ms",
-        "total_batches_started",
-        "full_acquires",
-        "partial_acquires",
-        "degraded_acquires" };
+        "total_batches_started" };
 
     /** The struct layout mirroring Rust's {@code DfStatsBuffer}. */
     public static final StructLayout LAYOUT = MemoryLayout.structLayout(
@@ -67,8 +64,8 @@ public final class StatsLayout {
     );
 
     static {
-        if (LAYOUT.byteSize() != 46 * Long.BYTES) {
-            throw new AssertionError("StatsLayout size mismatch: expected " + (46 * Long.BYTES) + " but got " + LAYOUT.byteSize());
+        if (LAYOUT.byteSize() != 43 * Long.BYTES) {
+            throw new AssertionError("StatsLayout size mismatch: expected " + (43 * Long.BYTES) + " but got " + LAYOUT.byteSize());
         }
     }
 
@@ -134,9 +131,6 @@ public final class StatsLayout {
     private static final VarHandle PG_ACTIVE_PERMITS = handle("partition_gate", "active_permits");
     private static final VarHandle PG_TOTAL_WAIT_DURATION_MS = handle("partition_gate", "total_wait_duration_ms");
     private static final VarHandle PG_TOTAL_BATCHES_STARTED = handle("partition_gate", "total_batches_started");
-    private static final VarHandle PG_FULL_ACQUIRES = handle("partition_gate", "full_acquires");
-    private static final VarHandle PG_PARTIAL_ACQUIRES = handle("partition_gate", "partial_acquires");
-    private static final VarHandle PG_DEGRADED_ACQUIRES = handle("partition_gate", "degraded_acquires");
 
     private StatsLayout() {}
 
@@ -197,10 +191,7 @@ public final class StatsLayout {
             (long) PG_MAX_PERMITS.get(seg, 0L),
             (long) PG_ACTIVE_PERMITS.get(seg, 0L),
             (long) PG_TOTAL_WAIT_DURATION_MS.get(seg, 0L),
-            (long) PG_TOTAL_BATCHES_STARTED.get(seg, 0L),
-            (long) PG_FULL_ACQUIRES.get(seg, 0L),
-            (long) PG_PARTIAL_ACQUIRES.get(seg, 0L),
-            (long) PG_DEGRADED_ACQUIRES.get(seg, 0L)
+            (long) PG_TOTAL_BATCHES_STARTED.get(seg, 0L)
         );
     }
 
@@ -233,10 +224,7 @@ public final class StatsLayout {
             ValueLayout.JAVA_LONG.withName("max_permits"),
             ValueLayout.JAVA_LONG.withName("active_permits"),
             ValueLayout.JAVA_LONG.withName("total_wait_duration_ms"),
-            ValueLayout.JAVA_LONG.withName("total_batches_started"),
-            ValueLayout.JAVA_LONG.withName("full_acquires"),
-            ValueLayout.JAVA_LONG.withName("partial_acquires"),
-            ValueLayout.JAVA_LONG.withName("degraded_acquires")
+            ValueLayout.JAVA_LONG.withName("total_batches_started")
         ).withName(name);
     }
 
