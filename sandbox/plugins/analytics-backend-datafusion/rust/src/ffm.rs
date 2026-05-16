@@ -900,6 +900,14 @@ pub unsafe extern "C" fn df_prepare_final_plan(
 pub unsafe extern "C" fn df_execute_local_prepared_plan(session_ptr: i64) -> i64 {
     let session = &*(session_ptr as *const crate::local_executor::LocalSession);
     let mgr = get_rt_manager()?;
+
+    // Acquire coordinator concurrency gate before executing the prepared plan.
+    let partition_weight = (num_cpus::get() as u32).max(1);
+    let coord_gate = mgr.coordinator_gate().clone();
+    let permit = mgr.io_runtime.block_on(
+        coord_gate.acquire_many(partition_weight.min(coord_gate.max_permits()))
+    );
+
     // DataFusion's execute_stream is sync, but kicks off RepartitionExec / stream
     // channels that require a Tokio reactor. Enter the IO runtime's context so those
     // operators can register with the reactor.
@@ -912,6 +920,6 @@ pub unsafe extern "C" fn df_execute_local_prepared_plan(session_ptr: i64) -> i64
         cross_rt_stream,
     );
     let query_context = crate::query_tracker::QueryTrackingContext::new(0, session.memory_pool());
-    let handle = crate::api::QueryStreamHandle::new(wrapped, query_context, None);
+    let handle = crate::api::QueryStreamHandle::new(wrapped, query_context, Some(permit));
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }

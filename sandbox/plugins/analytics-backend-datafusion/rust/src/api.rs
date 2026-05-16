@@ -648,8 +648,12 @@ pub async unsafe fn execute_local_plan(
     // `context_id` of 0 disables tracking (pool is not consulted).
     let query_context = QueryTrackingContext::new(context_id, session.memory_pool());
 
-    // No concurrency gate — this is the coordinator's final-aggregate path.
-    // Gating only applies to data-node fragment execution.
+    // Acquire coordinator concurrency gate — limits concurrent reduce executions.
+    // Uses a separate gate from the datanode to avoid deadlock (shard streams hold
+    // datanode permits while coordinator reduce runs concurrently on single-node).
+    let partition_weight = (num_cpus::get() as u32).max(1);
+    let coord_gate = manager.coordinator_gate().clone();
+    let permit = coord_gate.acquire_many(partition_weight.min(coord_gate.max_permits())).await;
 
     let df_stream = session.execute_substrait(substrait_bytes).await?;
 
@@ -660,7 +664,7 @@ pub async unsafe fn execute_local_plan(
         CrossRtStream::new_with_df_error_stream(df_stream, manager.cpu_executor());
     let wrapped = RecordBatchStreamAdapter::new(cross_rt_stream.schema(), cross_rt_stream);
 
-    let handle = QueryStreamHandle::new(wrapped, query_context, None);
+    let handle = QueryStreamHandle::new(wrapped, query_context, Some(permit));
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
 
