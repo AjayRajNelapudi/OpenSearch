@@ -169,7 +169,7 @@ public final class DatafusionSettings {
         "datafusion.concurrency.datanode_multiplier",
         1.0,
         0.1,
-        10.0,
+        10000.0,
         Setting.Property.NodeScope
     );
 
@@ -178,7 +178,7 @@ public final class DatafusionSettings {
         "datafusion.concurrency.coordinator_multiplier",
         1.0,
         0.1,
-        10.0,
+        10000.0,
         Setting.Property.NodeScope
     );
 
