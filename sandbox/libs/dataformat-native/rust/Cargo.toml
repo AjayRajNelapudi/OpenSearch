@@ -33,7 +33,7 @@ datafusion-physical-expr = "=53.1.0"
 datafusion-substrait = "=53.1.0"
 
 # Async
-tokio = { version = "=1.51.0", features = ["full"] }
+tokio = { version = "=1.51.0", features = ["full", "taskdump"] }
 tokio-util = "=0.7.18"
 futures = "=0.3.32"
 tokio-stream = "=0.1.18"
