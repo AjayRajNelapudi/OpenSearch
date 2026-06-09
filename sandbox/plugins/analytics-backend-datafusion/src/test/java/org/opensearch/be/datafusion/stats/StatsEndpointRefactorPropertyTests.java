@@ -109,11 +109,7 @@ public class StatsEndpointRefactorPropertyTests extends OpenSearchTestCase {
     /** DataFusionStats with non-null NativeExecutorsStats (CPU present or absent). */
     private DataFusionStats randomDataFusionStats() {
         NativeExecutorsStats nes = randomBoolean() ? randomNativeExecutorsStatsCpuPresent() : randomNativeExecutorsStatsCpuAbsent();
-        return new DataFusionStats(
-            nes,
-            new PartitionGateStats("datanode_gate", 12, 0, 0, 0, 0, 12),
-            new PartitionGateStats("coordinator_gate", 12, 0, 0, 0, 0, 12)
-        );
+        return new DataFusionStats(nes, new PartitionGateStats("fragment_executor_gate", 12, 0, 0, 0, 0, 12));
     }
 
     // ---- Property 1: Flat JSON serialization preserves all metric values at top level ----

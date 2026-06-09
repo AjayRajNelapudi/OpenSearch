@@ -35,7 +35,7 @@ public class StatsLayoutPropertyTests extends OpenSearchTestCase {
 
     private static final int TRIES = 100;
 
-    private static final int FIELD_COUNT = 38;
+    private static final int FIELD_COUNT = 36;
 
     // ---- Generators ----
 

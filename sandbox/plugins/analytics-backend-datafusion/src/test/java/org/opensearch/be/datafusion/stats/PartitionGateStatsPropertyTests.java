@@ -34,7 +34,7 @@ public class PartitionGateStatsPropertyTests extends OpenSearchTestCase {
     }
 
     private PartitionGateStats randomPartitionGateStats() {
-        String name = randomFrom("datanode_gate", "coordinator_gate");
+        String name = "fragment_executor_gate";
         long maxPermits = nonNegLong();
         return new PartitionGateStats(name, maxPermits, nonNegLong(), nonNegLong(), nonNegLong(), 0, maxPermits);
     }

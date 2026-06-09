@@ -55,8 +55,7 @@ public class RestDataFusionStatsAction extends BaseRestHandler {
         "query_execution",
         "stream_next",
         "plan_setup",
-        "datanode_gate",
-        "coordinator_gate"
+        "fragment_executor_gate"
     );
 
     /**

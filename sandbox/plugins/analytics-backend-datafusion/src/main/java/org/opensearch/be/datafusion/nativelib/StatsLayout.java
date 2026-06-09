@@ -23,7 +23,7 @@ import java.lang.invoke.VarHandle;
  * Defines the {@code MemoryLayout.structLayout} mirroring the Rust {@code DfStatsBuffer}
  * and provides {@link VarHandle} accessors for each field via layout path navigation.
  *
- * <p>The layout contains 8 named groups (2 runtime × 9 fields + 4 task monitor × 3 fields + 2 partition gate × 6 fields = 42 longs = 336 bytes).
+ * <p>The layout contains 7 named groups (2 runtime × 9 fields + 4 task monitor × 3 fields + 1 partition gate × 6 fields = 36 longs = 288 bytes).
  */
 public final class StatsLayout {
 
@@ -59,13 +59,12 @@ public final class StatsLayout {
         taskMonitorGroup("query_execution"),
         taskMonitorGroup("stream_next"),
         taskMonitorGroup("plan_setup"),
-        partitionGateGroup("fragment_executor_gate"),
-        partitionGateGroup("reduce_executor_gate")
+        partitionGateGroup("fragment_executor_gate")
     );
 
     static {
-        if (LAYOUT.byteSize() != 42 * Long.BYTES) {
-            throw new AssertionError("StatsLayout size mismatch: expected " + (42 * Long.BYTES) + " but got " + LAYOUT.byteSize());
+        if (LAYOUT.byteSize() != 36 * Long.BYTES) {
+            throw new AssertionError("StatsLayout size mismatch: expected " + (36 * Long.BYTES) + " but got " + LAYOUT.byteSize());
         }
     }
 
@@ -119,14 +118,6 @@ public final class StatsLayout {
     private static final VarHandle DG_POISON_PERMITS = handle("fragment_executor_gate", "poison_permits");
     private static final VarHandle DG_TARGET_MAX_PERMITS = handle("fragment_executor_gate", "target_max_permits");
 
-    // ---- VarHandles for reduce_executor_gate fields ----
-    private static final VarHandle CG_MAX_PERMITS = handle("reduce_executor_gate", "max_permits");
-    private static final VarHandle CG_ACTIVE_PERMITS = handle("reduce_executor_gate", "active_permits");
-    private static final VarHandle CG_TOTAL_WAIT_DURATION_MS = handle("reduce_executor_gate", "total_wait_duration_ms");
-    private static final VarHandle CG_TOTAL_BATCHES_STARTED = handle("reduce_executor_gate", "total_batches_started");
-    private static final VarHandle CG_POISON_PERMITS = handle("reduce_executor_gate", "poison_permits");
-    private static final VarHandle CG_TARGET_MAX_PERMITS = handle("reduce_executor_gate", "target_max_permits");
-
     private StatsLayout() {}
 
     /**
@@ -179,7 +170,7 @@ public final class StatsLayout {
      * Read a partition gate group (6 fields) from the segment.
      *
      * @param seg   the memory segment containing the DfStatsBuffer
-     * @param group "fragment_executor_gate" or "reduce_executor_gate"
+     * @param group "fragment_executor_gate"
      * @return a populated PartitionGateStats instance
      */
     public static PartitionGateStats readPartitionGate(MemorySegment seg, String group) {
@@ -190,7 +181,7 @@ public final class StatsLayout {
      * Read partition gate stats from the native buffer with a custom display name.
      *
      * @param seg         the memory segment containing the DfStatsBuffer
-     * @param group       "fragment_executor_gate" or "reduce_executor_gate" (layout key)
+     * @param group       "fragment_executor_gate" (layout key)
      * @param displayName the JSON key name to use when serializing
      * @return a populated PartitionGateStats instance
      */
@@ -297,13 +288,6 @@ public final class StatsLayout {
                 DG_TOTAL_BATCHES_STARTED,
                 DG_POISON_PERMITS,
                 DG_TARGET_MAX_PERMITS };
-            case "reduce_executor_gate" -> new VarHandle[] {
-                CG_MAX_PERMITS,
-                CG_ACTIVE_PERMITS,
-                CG_TOTAL_WAIT_DURATION_MS,
-                CG_TOTAL_BATCHES_STARTED,
-                CG_POISON_PERMITS,
-                CG_TARGET_MAX_PERMITS };
             default -> throw new IllegalArgumentException("Unknown partition gate group: " + group);
         };
     }

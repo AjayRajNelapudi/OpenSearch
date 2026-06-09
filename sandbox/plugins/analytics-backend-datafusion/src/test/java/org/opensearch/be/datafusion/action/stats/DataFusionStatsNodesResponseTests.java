@@ -62,8 +62,7 @@ public class DataFusionStatsNodesResponseTests extends OpenSearchTestCase {
         taskMonitors.put("plan_setup", new TaskMonitorStats(100, 110, 120));
         return new DataFusionStats(
             new NativeExecutorsStats(io, null, taskMonitors),
-            new PartitionGateStats("datanode_gate", 12, 3, 100, 500, 0, 12),
-            new PartitionGateStats("coordinator_gate", 8, 1, 50, 200, 0, 8)
+            new PartitionGateStats("fragment_executor_gate", 12, 3, 100, 500, 0, 12)
         );
     }
 
@@ -118,8 +117,7 @@ public class DataFusionStatsNodesResponseTests extends OpenSearchTestCase {
         assertFalse(nodeEntry.containsKey("host"));
         assertFalse(nodeEntry.containsKey("transport_address"));
         assertTrue(nodeEntry.containsKey("io_runtime"));
-        assertTrue(nodeEntry.containsKey("datanode_gate"));
-        assertTrue(nodeEntry.containsKey("coordinator_gate"));
+        assertTrue(nodeEntry.containsKey("fragment_executor_gate"));
     }
 
     // ---- Test 2: Multiple nodes JSON structure ----
@@ -298,8 +296,7 @@ public class DataFusionStatsNodesResponseTests extends OpenSearchTestCase {
         assertFalse(nodeEntry.containsKey("query_execution"));
         assertFalse(nodeEntry.containsKey("stream_next"));
         assertFalse(nodeEntry.containsKey("plan_setup"));
-        assertFalse(nodeEntry.containsKey("datanode_gate"));
-        assertFalse(nodeEntry.containsKey("coordinator_gate"));
+        assertFalse(nodeEntry.containsKey("fragment_executor_gate"));
     }
 
     // ---- Test 8: Empty nodes list ----

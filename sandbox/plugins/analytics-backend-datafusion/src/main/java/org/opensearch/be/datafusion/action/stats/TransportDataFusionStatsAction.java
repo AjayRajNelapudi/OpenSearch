@@ -115,8 +115,7 @@ public class TransportDataFusionStatsAction extends TransportNodesAction<
      *   <li>{@code query_execution} &rarr; {@link NativeExecutorsStats#getTaskMonitors()}.get("query_execution")</li>
      *   <li>{@code stream_next} &rarr; {@link NativeExecutorsStats#getTaskMonitors()}.get("stream_next")</li>
      *   <li>{@code plan_setup} &rarr; {@link NativeExecutorsStats#getTaskMonitors()}.get("plan_setup")</li>
-     *   <li>{@code datanode_gate} &rarr; {@link DataFusionStats#getDatanodeGateStats()}</li>
-     *   <li>{@code coordinator_gate} &rarr; {@link DataFusionStats#getCoordinatorGateStats()}</li>
+     *   <li>{@code fragment_executor_gate} &rarr; {@link DataFusionStats#getFragmentExecutorGateStats()}</li>
      * </ul>
      *
      * @param stats  the full stats (may be null)
@@ -132,8 +131,7 @@ public class TransportDataFusionStatsAction extends TransportNodesAction<
         }
 
         // Determine which gate stats to include
-        PartitionGateStats datanodeGate = filter.contains("datanode_gate") ? stats.getDatanodeGateStats() : null;
-        PartitionGateStats coordinatorGate = filter.contains("coordinator_gate") ? stats.getCoordinatorGateStats() : null;
+        PartitionGateStats fragmentExecutorGate = filter.contains("fragment_executor_gate") ? stats.getFragmentExecutorGateStats() : null;
 
         // Determine which NativeExecutorsStats sections to include
         NativeExecutorsStats nativeStats = stats.getNativeExecutorsStats();
@@ -166,6 +164,6 @@ public class TransportDataFusionStatsAction extends TransportNodesAction<
             }
         }
 
-        return new DataFusionStats(filteredNativeStats, datanodeGate, coordinatorGate);
+        return new DataFusionStats(filteredNativeStats, fragmentExecutorGate);
     }
 }

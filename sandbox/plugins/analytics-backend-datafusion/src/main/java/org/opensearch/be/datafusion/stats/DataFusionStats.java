@@ -32,24 +32,17 @@ import java.util.Objects;
 public class DataFusionStats implements Writeable, ToXContentFragment {
 
     private final NativeExecutorsStats nativeExecutorsStats; // nullable
-    private final PartitionGateStats datanodeGateStats; // nullable
-    private final PartitionGateStats coordinatorGateStats; // nullable
+    private final PartitionGateStats fragmentExecutorGateStats; // nullable
 
     /**
      * Construct from components.
      *
      * @param nativeExecutorsStats  the native executor metrics (nullable)
-     * @param datanodeGateStats     the datanode partition gate metrics (nullable)
-     * @param coordinatorGateStats  the coordinator partition gate metrics (nullable)
+     * @param fragmentExecutorGateStats     the datanode partition gate metrics (nullable)
      */
-    public DataFusionStats(
-        NativeExecutorsStats nativeExecutorsStats,
-        PartitionGateStats datanodeGateStats,
-        PartitionGateStats coordinatorGateStats
-    ) {
+    public DataFusionStats(NativeExecutorsStats nativeExecutorsStats, PartitionGateStats fragmentExecutorGateStats) {
         this.nativeExecutorsStats = nativeExecutorsStats;
-        this.datanodeGateStats = datanodeGateStats;
-        this.coordinatorGateStats = coordinatorGateStats;
+        this.fragmentExecutorGateStats = fragmentExecutorGateStats;
     }
 
     /**
@@ -60,15 +53,13 @@ public class DataFusionStats implements Writeable, ToXContentFragment {
      */
     public DataFusionStats(StreamInput in) throws IOException {
         this.nativeExecutorsStats = in.readOptionalWriteable(NativeExecutorsStats::new);
-        this.datanodeGateStats = in.readOptionalWriteable(PartitionGateStats::new);
-        this.coordinatorGateStats = in.readOptionalWriteable(PartitionGateStats::new);
+        this.fragmentExecutorGateStats = in.readOptionalWriteable(PartitionGateStats::new);
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeOptionalWriteable(nativeExecutorsStats);
-        out.writeOptionalWriteable(datanodeGateStats);
-        out.writeOptionalWriteable(coordinatorGateStats);
+        out.writeOptionalWriteable(fragmentExecutorGateStats);
     }
 
     @Override
@@ -76,11 +67,8 @@ public class DataFusionStats implements Writeable, ToXContentFragment {
         if (nativeExecutorsStats != null) {
             nativeExecutorsStats.toXContent(builder, params);
         }
-        if (datanodeGateStats != null) {
-            datanodeGateStats.toXContent(builder, params);
-        }
-        if (coordinatorGateStats != null) {
-            coordinatorGateStats.toXContent(builder, params);
+        if (fragmentExecutorGateStats != null) {
+            fragmentExecutorGateStats.toXContent(builder, params);
         }
         return builder;
     }
@@ -95,15 +83,8 @@ public class DataFusionStats implements Writeable, ToXContentFragment {
     /**
      * Returns the datanode partition gate metrics, or {@code null} if absent.
      */
-    public PartitionGateStats getDatanodeGateStats() {
-        return datanodeGateStats;
-    }
-
-    /**
-     * Returns the coordinator partition gate metrics, or {@code null} if absent.
-     */
-    public PartitionGateStats getCoordinatorGateStats() {
-        return coordinatorGateStats;
+    public PartitionGateStats getFragmentExecutorGateStats() {
+        return fragmentExecutorGateStats;
     }
 
     @Override
@@ -112,12 +93,11 @@ public class DataFusionStats implements Writeable, ToXContentFragment {
         if (o == null || getClass() != o.getClass()) return false;
         DataFusionStats that = (DataFusionStats) o;
         return Objects.equals(nativeExecutorsStats, that.nativeExecutorsStats)
-            && Objects.equals(datanodeGateStats, that.datanodeGateStats)
-            && Objects.equals(coordinatorGateStats, that.coordinatorGateStats);
+            && Objects.equals(fragmentExecutorGateStats, that.fragmentExecutorGateStats);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(nativeExecutorsStats, datanodeGateStats, coordinatorGateStats);
+        return Objects.hash(nativeExecutorsStats, fragmentExecutorGateStats);
     }
 }

@@ -24,8 +24,7 @@ import java.util.Objects;
  * <p>Contains 6 metrics: the semaphore capacity, current utilization, cumulative
  * wait time, cumulative batch count, poison permits held, and target max permits.
  *
- * <p>Two instances exist at runtime: one for the datanode gate (shard-scan partitions)
- * and one for the coordinator gate (reduce partitions).
+ * <p>One instance exists at runtime for the datanode gate (shard-scan partitions).
  */
 public class PartitionGateStats implements Writeable, ToXContentFragment {
 
@@ -53,7 +52,7 @@ public class PartitionGateStats implements Writeable, ToXContentFragment {
     /**
      * Construct from explicit field values.
      *
-     * @param name                JSON key for this gate (e.g. "fragment_executor_gate", "reduce_executor_gate")
+     * @param name                JSON key for this gate (e.g. "fragment_executor_gate")
      * @param maxPermits          total semaphore capacity
      * @param activePermits       currently held permits
      * @param totalWaitDurationMs cumulative wait time in milliseconds
