@@ -1,2 +1,2 @@
 [build]
-rustflags = ["--cfg", "tokio_unstable", "-C", "force-frame-pointers=yes", "-C", "symbol-mangling-version=v0"]
+rustflags = ["--cfg", "tokio_unstable", "--cfg", "tokio_taskdump", "-C", "force-frame-pointers=yes", "-C", "symbol-mangling-version=v0"]

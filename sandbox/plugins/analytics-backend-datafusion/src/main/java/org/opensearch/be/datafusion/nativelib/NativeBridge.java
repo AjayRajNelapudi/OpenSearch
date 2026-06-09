@@ -119,6 +119,7 @@ public final class NativeBridge {
     private static final MethodHandle PREPARE_FINAL_PLAN;
     private static final MethodHandle EXECUTE_LOCAL_PREPARED_PLAN;
     private static final MethodHandle FETCH_BY_ROW_IDS;
+    private static final MethodHandle DF_TASK_DUMP;
 
     static {
         SymbolLookup lib = NativeLibraryLoader.symbolLookup();
@@ -549,6 +550,23 @@ public final class NativeBridge {
                 ValueLayout.JAVA_LONG
             )
         );
+
+        // i64 df_task_dump(out_ptr, out_cap, out_len, summary_only, limit)
+        // Optional: symbol may not be present if native lib was built without tokio_taskdump support
+        var taskDumpSym = lib.find("df_task_dump");
+        DF_TASK_DUMP = taskDumpSym.isPresent()
+            ? linker.downcallHandle(
+                taskDumpSym.get(),
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_LONG,   // return: i64 (0 or neg error ptr)
+                    ValueLayout.ADDRESS,     // out_ptr
+                    ValueLayout.JAVA_LONG,   // out_cap
+                    ValueLayout.ADDRESS,     // out_len
+                    ValueLayout.JAVA_LONG,   // summary_only (0/1)
+                    ValueLayout.JAVA_LONG    // limit (-1 = all)
+                )
+            )
+            : null;
     }
 
     private NativeBridge() {}
@@ -1053,6 +1071,34 @@ public final class NativeBridge {
             var seg = call.buf(32);
             call.invoke(DF_NATIVE_NODE_STATS, seg, 32L);
             return NativeNodeStatsLayout.readNativeNodeStats(seg);
+        }
+    }
+
+    // ---- Task dump ----
+
+    /**
+     * Dumps all alive tokio tasks on the CPU runtime with async stack traces.
+     *
+     * @param summaryOnly when true, omit per-task traces; return only num_tasks + summary
+     * @param limit       max tasks in the traces array; -1 means no limit, 0 means empty array
+     * @return JSON string with task dump data
+     * @throws IllegalStateException if the runtime manager is not initialized or CPU executor shut down
+     */
+    public static String taskDump(boolean summaryOnly, long limit) {
+        if (DF_TASK_DUMP == null) {
+            throw new IllegalStateException("task dump is not supported on this platform (df_task_dump symbol not found)");
+        }
+        try (var call = new NativeCall()) {
+            var out = call.outBuffer(4 * 1024 * 1024); // 4MB
+            call.invoke(
+                DF_TASK_DUMP,
+                out.data(),
+                (long) out.capacity(),
+                out.lenOut(),
+                summaryOnly ? 1L : 0L,
+                limit
+            );
+            return new String(out.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
         }
     }
 

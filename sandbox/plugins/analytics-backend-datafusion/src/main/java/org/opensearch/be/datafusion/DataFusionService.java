@@ -191,6 +191,21 @@ public class DataFusionService extends AbstractLifecycleComponent {
         }
         return NativeBridge.stats();
     }
+
+    /**
+     * Returns a JSON string containing the tokio task dump from the CPU runtime.
+     *
+     * @param summaryOnly when true, omit per-task traces
+     * @param limit       max tasks in the traces array; -1 means no limit
+     * @return JSON string
+     * @throws IllegalStateException if service not started
+     */
+    public String getTaskDump(boolean summaryOnly, long limit) {
+        if (runtimeHandle == null) {
+            throw new IllegalStateException("DataFusionService has not been started");
+        }
+        return NativeBridge.taskDump(summaryOnly, limit);
+    }
     // Cache management (node-level, delegates to native runtime)
 
     /**

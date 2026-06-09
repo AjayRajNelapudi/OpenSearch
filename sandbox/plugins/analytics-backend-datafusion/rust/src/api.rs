@@ -2052,3 +2052,130 @@ fn assert_fetch_result_schema(schema: &datafusion::arrow::datatypes::Schema, col
     }
     true
 }
+
+/// Dumps all alive tasks on the CPU runtime with their async stack traces.
+/// Requires `tokio_unstable` and `tokio_taskdump` cfg flags at build time,
+/// and is only available on Linux (aarch64/x86/x86_64).
+///
+/// # Parameters
+/// - `manager`: the RuntimeManager owning the CPU executor
+/// - `summary_only`: when true, omit the per-task `tasks` array from output
+/// - `limit`: when >= 0, truncate the `tasks` array to this many entries; -1 means no limit
+///
+/// # Returns
+/// JSON string with structure:
+/// - Always: `num_tasks` (integer), `summary.by_location` (object, top 10 + "other")
+/// - When !summary_only: `tasks` array of {id, trace} (subject to limit)
+#[cfg(all(
+    tokio_unstable,
+    tokio_taskdump,
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+))]
+pub async fn task_dump(manager: &RuntimeManager, summary_only: bool, limit: i64) -> Result<String, String> {
+    // 1. Get the CPU executor's tokio Handle
+    let handle = manager
+        .cpu_executor()
+        .handle()
+        .ok_or_else(|| "CPU executor shut down".to_string())?;
+
+    // 2. Dump all alive tasks
+    let dump = handle.dump().await;
+
+    // 3. Build by_location summary from ALL tasks
+    let tasks = dump.tasks();
+    let num_tasks = tasks.iter().count();
+
+    let mut location_counts: HashMap<String, usize> = HashMap::new();
+    for task in tasks.iter() {
+        let trace = format!("{}", task.trace());
+        let first_line = trace
+            .lines()
+            .next()
+            .unwrap_or("unknown")
+            .trim()
+            .to_string();
+        *location_counts.entry(first_line).or_insert(0) += 1;
+    }
+
+    // Sort descending by count
+    let mut sorted_locations: Vec<(String, usize)> = location_counts.into_iter().collect();
+    sorted_locations.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Keep top 10, sum remainder as "other"
+    let mut by_location = serde_json::Map::new();
+    let mut other_count: usize = 0;
+    for (i, (location, count)) in sorted_locations.iter().enumerate() {
+        if i < 10 {
+            by_location.insert(
+                location.clone(),
+                serde_json::Value::Number(serde_json::Number::from(*count)),
+            );
+        } else {
+            other_count += count;
+        }
+    }
+    if other_count > 0 {
+        by_location.insert(
+            "other".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(other_count)),
+        );
+    }
+
+    // 4. Build summary object
+    let summary = serde_json::json!({
+        "by_location": serde_json::Value::Object(by_location)
+    });
+
+    // 5. Conditionally build tasks array
+    let mut result = serde_json::json!({
+        "num_tasks": num_tasks,
+        "summary": summary
+    });
+
+    if !summary_only {
+        let task_entries: Vec<serde_json::Value> = if limit >= 0 {
+            tasks
+                .iter()
+                .enumerate()
+                .take(limit as usize)
+                .map(|(i, task): (usize, &tokio::runtime::dump::Task)| {
+                    serde_json::json!({
+                        "id": i,
+                        "trace": format!("{}", task.trace())
+                    })
+                })
+                .collect()
+        } else {
+            tasks
+                .iter()
+                .enumerate()
+                .map(|(i, task): (usize, &tokio::runtime::dump::Task)| {
+                    serde_json::json!({
+                        "id": i,
+                        "trace": format!("{}", task.trace())
+                    })
+                })
+                .collect()
+        };
+        result
+            .as_object_mut()
+            .unwrap()
+            .insert("tasks".to_string(), serde_json::Value::Array(task_entries));
+    }
+
+    // 6. Serialize to JSON string
+    serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+/// Fallback for non-Linux platforms where tokio task dump is not available.
+/// Returns an error indicating that the platform doesn't support task dumps.
+#[cfg(not(all(
+    tokio_unstable,
+    tokio_taskdump,
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+)))]
+pub async fn task_dump(_manager: &RuntimeManager, _summary_only: bool, _limit: i64) -> Result<String, String> {
+    Err("task dump is only supported on Linux (aarch64/x86/x86_64) with tokio_taskdump enabled".to_string())
+}

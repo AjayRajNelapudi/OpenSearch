@@ -16,6 +16,9 @@ import org.opensearch.analytics.spi.QueryExecutionMetrics;
 import org.opensearch.be.datafusion.action.stats.DataFusionStatsActionType;
 import org.opensearch.be.datafusion.action.stats.RestDataFusionStatsAction;
 import org.opensearch.be.datafusion.action.stats.TransportDataFusionStatsAction;
+import org.opensearch.be.datafusion.action.taskdump.TaskDumpActionType;
+import org.opensearch.be.datafusion.action.taskdump.TransportTaskDumpAction;
+import org.opensearch.be.datafusion.action.taskdump.RestTaskDumpAction;
 import org.opensearch.be.datafusion.nativelib.NativeBridge;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNodes;
@@ -658,7 +661,10 @@ public class DataFusionPlugin extends Plugin
 
     @Override
     public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
-        return List.of(new ActionHandler<>(DataFusionStatsActionType.INSTANCE, TransportDataFusionStatsAction.class));
+        return List.of(
+            new ActionHandler<>(DataFusionStatsActionType.INSTANCE, TransportDataFusionStatsAction.class),
+            new ActionHandler<>(TaskDumpActionType.INSTANCE, TransportTaskDumpAction.class)
+        );
     }
 
     @Override
@@ -674,7 +680,7 @@ public class DataFusionPlugin extends Plugin
         if (dataFusionService == null) {
             return Collections.emptyList();
         }
-        return List.of(new RestDataFusionStatsAction());
+        return List.of(new RestDataFusionStatsAction(), new RestTaskDumpAction());
     }
 
     @Override

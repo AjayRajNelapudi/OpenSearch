@@ -1245,6 +1245,42 @@ pub unsafe extern "C" fn df_execute_local_prepared_plan(
     api::execute_local_prepared_plan(session_ptr, &mgr, context_id, None).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Task dump diagnostic endpoint
+// ---------------------------------------------------------------------------
+
+/// Dumps all alive tokio tasks on the CPU runtime with their async stack traces.
+///
+/// Writes the JSON result into the caller-allocated `(out_ptr, out_cap)` buffer
+/// and sets `*out_len` to the number of bytes written.
+///
+/// # Parameters
+/// - `out_ptr`: caller-allocated output buffer
+/// - `out_cap`: capacity of the output buffer in bytes
+/// - `out_len`: pointer where the actual written length is stored
+/// - `summary_only`: 0 = include per-task traces, non-zero = omit tasks array
+/// - `limit`: -1 = no limit on tasks array, >= 0 = max entries
+///
+/// # Returns
+/// 0 on success; negative value is a negated error-string pointer.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn df_task_dump(
+    out_ptr: *mut u8,
+    out_cap: i64,
+    out_len: *mut i64,
+    summary_only: i64,
+    limit: i64,
+) -> i64 {
+    let mgr = get_rt_manager()?;
+    let summary_only_bool = summary_only != 0;
+    let json = mgr
+        .io_runtime
+        .block_on(crate::api::task_dump(&mgr, summary_only_bool, limit))?;
+    write_out_buffer(json.as_bytes(), out_ptr, out_cap, out_len, "task_dump")?;
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
